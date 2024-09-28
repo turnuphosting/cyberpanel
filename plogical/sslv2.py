@@ -270,7 +270,8 @@ class sslUtilities:
                     except BaseException as msg:
                         website = Websites.objects.get(domain=virtualHostName)
                         externalApp = website.externalApp
-                        DocumentRoot = '    DocumentRoot /home/' + virtualHostName + '/public_html\n'
+                        docRoot = ACLManager.FindDocRootOfSite(None, virtualHostName)
+                        DocumentRoot = f'    DocumentRoot {docRoot}\n'
 
                     data = open(completePathToConfigFile, 'r').readlines()
                     phpHandler = ''
@@ -338,10 +339,11 @@ class sslUtilities:
             import tldextract
 
             RetStatus, SAVED_CF_Key, SAVED_CF_Email = ACLManager.FetchCloudFlareAPIKeyFromAcme()
+            no_cache_extract = tldextract.TLDExtract(cache_dir=None)
 
             if RetStatus:
 
-                extractDomain = tldextract.extract(virtualHostName)
+                extractDomain = no_cache_extract(virtualHostName)
                 topLevelDomain = extractDomain.domain + '.' + extractDomain.suffix
                 logging.CyberCPLogFileWriter.writeToFile(f'top level domain in cf: {topLevelDomain}')
                 import CloudFlare
@@ -374,7 +376,8 @@ class sslUtilities:
 
             from plogical.dnsUtilities import DNS
             from dns.models import Domains
-            extractDomain = tldextract.extract(virtualHostName)
+            no_cache_extract = tldextract.TLDExtract(cache_dir=None)
+            extractDomain = no_cache_extract(virtualHostName)
             topLevelDomain = extractDomain.domain + '.' + extractDomain.suffix
             zone = Domains.objects.get(name=topLevelDomain)
 
@@ -401,6 +404,16 @@ class sslUtilities:
         CF_Check = 0
         Namecheck_Check = 0
         CyberPanel_Check = 0
+
+        #### if website already have an SSL, better not issue again - need to check for wild-card
+        filePath = '/etc/letsencrypt/live/%s/fullchain.pem' % (virtualHostName)
+        if os.path.exists(filePath):
+            import OpenSSL
+            x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, open(filePath, 'r').read())
+            SSLProvider = x509.get_issuer().get_components()[1][1].decode('utf-8')
+
+            if SSLProvider != 'Denial':
+                return 1, 'This domain already have a valid SSL.'
 
 
         CF_Check, message = sslUtilities.FindIfDomainInCloudflare(virtualHostName)

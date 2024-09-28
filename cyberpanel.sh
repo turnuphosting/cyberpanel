@@ -257,9 +257,13 @@ if ! uname -m | grep -qE 'x86_64|aarch64' ; then
   exit
 fi
 
-if grep -q -E "CentOS Linux 7|CentOS Linux 8" /etc/os-release ; then
+if grep -q -E "CentOS Linux 7|CentOS Linux 8|CentOS Stream" /etc/os-release ; then
   Server_OS="CentOS"
+elif grep -q "Red Hat Enterprise Linux" /etc/os-release ; then
+  Server_OS="RedHat"
 elif grep -q "AlmaLinux-8" /etc/os-release ; then
+  Server_OS="AlmaLinux"
+elif grep -q "AlmaLinux-9" /etc/os-release ; then
   Server_OS="AlmaLinux"
 elif grep -q -E "CloudLinux 7|CloudLinux 8" /etc/os-release ; then
   Server_OS="CloudLinux"
@@ -271,8 +275,8 @@ elif grep -q -E "openEuler 20.03|openEuler 22.03" /etc/os-release ; then
   Server_OS="openEuler"
 else
   echo -e "Unable to detect your system..."
-  echo -e "\nCyberPanel is supported on x86_64 based Ubuntu 18.04, Ubuntu 20.04, Ubuntu 20.10, Ubuntu 22.04, CentOS 7, CentOS 8, AlmaLinux 8, RockyLinux 8, CloudLinux 7, CloudLinux 8, openEuler 20.03, openEuler 22.03...\n"
-  Debug_Log2 "CyberPanel is supported on x86_64 based Ubuntu 18.04, Ubuntu 20.04, Ubuntu 20.10, Ubuntu 22.04, CentOS 7, CentOS 8, AlmaLinux 8, RockyLinux 8, CloudLinux 7, CloudLinux 8, openEuler 20.03, openEuler 22.03... [404]"
+  echo -e "\nCyberPanel is supported on x86_64 based Ubuntu 18.04, Ubuntu 20.04, Ubuntu 20.10, Ubuntu 22.04, CentOS 7, CentOS 8, CentOS 9, RHEL 8, RHEL 9, AlmaLinux 8, AlmaLinux 9, RockyLinux 8, CloudLinux 7, CloudLinux 8, openEuler 20.03, openEuler 22.03...\n"
+  Debug_Log2 "CyberPanel is supported on x86_64 based Ubuntu 18.04, Ubuntu 20.04, Ubuntu 20.10, Ubuntu 22.04, CentOS 7, CentOS 8, CentOS 9, RHEL 8, RHEL 9, AlmaLinux 8, RockyLinux 8, AlmaLinux 9, CloudLinux 7, CloudLinux 8, openEuler 20.03, openEuler 22.03... [404]"
   exit
 fi
 
@@ -281,7 +285,7 @@ Server_OS_Version=$(grep VERSION_ID /etc/os-release | awk -F[=,] '{print $2}' | 
 
 echo -e "System: $Server_OS $Server_OS_Version detected...\n"
 
-if [[ $Server_OS = "CloudLinux" ]] || [[ "$Server_OS" = "AlmaLinux" ]] || [[ "$Server_OS" = "RockyLinux" ]] ; then
+if [[ $Server_OS = "CloudLinux" ]] || [[ "$Server_OS" = "AlmaLinux" ]] || [[ "$Server_OS" = "RockyLinux" ]] || [[ "$Server_OS" = "RedHat" ]] ; then
   Server_OS="CentOS"
   #CloudLinux gives version id like 7.8, 7.9, so cut it to show first number only
   #treat CloudLinux, Rocky and Alma as CentOS
@@ -346,6 +350,10 @@ elif [[ -d /usr/local/directadmin ]]; then
 elif [[ -d /etc/httpd/conf/plesk.conf.d/ ]] || [[ -d /etc/apache2/plesk.conf.d/ ]]; then
   echo -e "\nPlesk detected...\n"
   Debug_Log2 "Plesk detected...exit... [404]"
+  exit
+elif [[ -d /usr/local/panel/ ]]; then
+  echo -e "\nOpenPanel detected...\n"
+  Debug_Log2 "OpenPanel detected...exit... [404]"
   exit
 fi
 }
@@ -714,7 +722,7 @@ fi
 
 echo -e "\nPlease choose to use default admin password \e[31m1234567\e[39m, randomly generate one \e[31m(recommended)\e[39m or specify the admin password?"
 printf "%s" "Choose [d]fault, [r]andom or [s]et password: [d/r/s] "
-read -r Tmp_Input
+Tmp_Input="r"
 
 if [[ $Tmp_Input =~ ^(d|D| ) ]] || [[ -z $Tmp_Input ]]; then
   Admin_Pass="1234567"
@@ -831,6 +839,40 @@ if [[ $Server_OS = "CentOS" ]] ; then
   rm -f /etc/yum.repos.d/epel.repo
   rm -f /etc/yum.repos.d/epel.repo.rpmsave
 
+  if [[ "$Server_OS_Version" = "9" ]]; then
+
+    # Check if architecture is aarch64
+    if uname -m | grep -q 'aarch64' ; then
+      # Run the following commands if architecture is aarch64
+      /usr/bin/crb enable
+      curl -sS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | sudo bash
+      dnf install libxcrypt-compat -y
+    fi
+
+    subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || yum config-manager --set-enabled crb > /dev/null 2>&1
+    yum install -y https://cyberpanel.sh/dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+      Check_Return "yum repo" "no_exit"
+    yum install -y https://rpms.remirepo.net/enterprise/remi-release-9.rpm
+      Check_Return "yum repo" "no_exit"
+    #!/bin/bash
+
+# Check if architecture is x86_64
+if uname -m | grep -q 'x86_64' ; then
+  # Create the MariaDB repository configuration file for x86_64 architecture
+  cat <<EOF >/etc/yum.repos.d/MariaDB.repo
+# MariaDB 10.11 CentOS repository list - created 2021-08-06 02:01 UTC
+# http://downloads.mariadb.org/mariadb/repositories/
+[mariadb]
+name = MariaDB
+baseurl = http://yum.mariadb.org/10.11/rhel9-amd64/
+gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+enabled=1
+gpgcheck=1
+EOF
+  echo "MariaDB repository file created for x86_64 architecture."
+fi
+  fi
+
   if [[ "$Server_OS_Version" = "8" ]]; then
     rpm --import https://cyberpanel.sh/www.centos.org/keys/RPM-GPG-KEY-CentOS-Official
     rpm --import https://cyberpanel.sh/dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-8
@@ -843,6 +885,7 @@ if [[ $Server_OS = "CentOS" ]] ; then
 
     dnf config-manager --set-enabled PowerTools > /dev/null 2>&1
     dnf config-manager --set-enabled powertools > /dev/null 2>&1
+
   
 #    cat <<EOF >/etc/yum.repos.d/CentOS-PowerTools-CyberPanel.repo
 #[powertools-for-cyberpanel]
@@ -979,7 +1022,12 @@ Debug_Log2 "Setting up repositories for CN server...,1"
 Download_Requirement() {
 for i in {1..50} ;
   do
-  wget -O /usr/local/requirments.txt "${Git_Content_URL}/${Branch_Name}/requirments.txt"
+  if [[ "$Server_OS_Version" = "22" ]] || [[ "$Server_OS_Version" = "9" ]]; then
+   wget -O /usr/local/requirments.txt "${Git_Content_URL}/${Branch_Name}/requirments.txt"
+  else
+   wget -O /usr/local/requirments.txt "${Git_Content_URL}/${Branch_Name}/requirments-old.txt"
+  fi
+
   if grep -q "Django==" /usr/local/requirments.txt ; then
     break
   else
@@ -1006,6 +1054,13 @@ if [[ "$Server_OS" = "CentOS" ]] || [[ "$Server_OS" = "openEuler" ]] ; then
     dnf install -y libnsl zip wget strace net-tools curl which bc telnet htop libevent-devel gcc libattr-devel xz-devel mariadb-devel curl-devel git platform-python-devel tar socat python3 zip unzip bind-utils
       Check_Return
     dnf install -y gpgme-devel
+      Check_Return
+  elif [[ "$Server_OS_Version" = "9" ]] ; then
+
+    #!/bin/bash
+
+
+    dnf install -y libnsl zip wget strace net-tools curl which bc telnet htop libevent-devel gcc libattr-devel xz-devel MariaDB-server MariaDB-client MariaDB-devel curl-devel git platform-python-devel tar socat python3 zip unzip bind-utils gpgme-devel
       Check_Return
   elif [[ "$Server_OS_Version" = "20" ]] || [[ "$Server_OS_Version" = "22" ]] ; then
     dnf install -y libnsl zip wget strace net-tools curl which bc telnet htop libevent-devel gcc libattr-devel xz-devel mariadb-devel curl-devel git python3-devel tar socat python3 zip unzip bind-utils
@@ -1055,7 +1110,7 @@ export LC_CTYPE=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 #need to set lang to address some pip module installation issue.
 
-Retry_Command "pip install --default-timeout=3600 virtualenv==16.7.9"
+Retry_Command "pip install --default-timeout=3600 virtualenv"
 
 Download_Requirement
 
@@ -1336,6 +1391,11 @@ if [[ "$Server_OS" = "CentOS" ]] ; then
   #get this set up beforehand.
   fi
 
+  if [[ "$Server_OS_Version" = "9" ]] ; then
+    sed -i 's|rpm -Uvh http://rpms.litespeedtech.com/centos/litespeed-repo-1.1-1.el8.noarch.rpm|curl -o /etc/yum.repos.d/litespeed.repo https://rpms.litespeedtech.com/centos/litespeed.repo|g' install.py
+    sed -i "s|mirrorlist=http://mirrorlist.ghettoforge.org/el/8/gf/\$basearch/mirrorlist|baseurl=https://cyberpanel.sh/mirror.ghettoforge.org/distributions/gf/el/9/gf/x86_64/|g" /etc/yum.repos.d/gf.repo
+    sed -i "s|mirrorlist=http://mirrorlist.ghettoforge.org/el/8/plus/\$basearch/mirrorlist|baseurl=https://cyberpanel.sh/mirror.ghettoforge.org/distributions/gf/el/9/plus/x86_64/|g" /etc/yum.repos.d/gf.repo
+  fi
 fi
 
 sed -i "s|https://www.litespeedtech.com/|https://cyberpanel.sh/www.litespeedtech.com/|g" installCyberPanel.py
@@ -1534,7 +1594,7 @@ fi
 
 Post_Install_Addon_Redis() {
 if [[ "$Server_OS" = "CentOS" ]]; then
-  if [[ "$Server_OS_Version" = "8" ]]; then
+  if [[ "$Server_OS_Version" = "8" || "$Server_OS_Version" = "9" ]]; then
     yum install -y lsphp??-redis redis
   else
     yum -y install http://rpms.remirepo.net/enterprise/remi-release-7.rpm
@@ -1824,7 +1884,17 @@ Retry_Command "pip install --default-timeout=3600 -r /usr/local/requirments.txt"
 
 if [[ "$Server_OS" = "Ubuntu" ]] && [[ "$Server_OS_Version" = "22" ]] ; then
   cp /usr/bin/python3.10 /usr/local/CyberCP/bin/python3
+else
+  if [[ "$Server_OS_Version" = "9" ]] || [[ "$Server_OS_Version" = "8" ]] || [[ "$Server_OS_Version" = "20" ]]; then
+    echo "PYTHONHOME=/usr" > /usr/local/lscp/conf/pythonenv.conf
+  else
+    # Uncomment and use the following lines if necessary for other OS versions
+    # rsync -av --ignore-existing /usr/lib64/python3.9/ /usr/local/CyberCP/lib64/python3.9/
+    # Check_Return
+    :
+  fi
 fi
+
 
 chown -R cyberpanel:cyberpanel /usr/local/CyberCP/lib
 chown -R cyberpanel:cyberpanel /usr/local/CyberCP/lib64 || true

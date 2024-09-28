@@ -892,7 +892,7 @@ class FirewallManager:
 
                 if modSecInstalled:
                     command = "sudo cat " + rulesPath
-                    currentModSecRules = ProcessUtilities.outputExecutioner(command).split('\n')
+                    currentModSecRules = ProcessUtilities.outputExecutioner(command)
 
                     final_dic = {'modSecInstalled': 1,
                                  'currentModSecRules': currentModSecRules}
@@ -908,7 +908,7 @@ class FirewallManager:
                 rulesPath = os.path.join(virtualHostUtilities.Server_root + "/conf/rules.conf")
 
                 command = "sudo cat " + rulesPath
-                currentModSecRules = ProcessUtilities.outputExecutioner(command).split('\n')
+                currentModSecRules = ProcessUtilities.outputExecutioner(command)
 
                 final_dic = {'modSecInstalled': 1,
                              'currentModSecRules': currentModSecRules}
@@ -1312,6 +1312,10 @@ class FirewallManager:
         try:
             userID = self.request.session['userID']
             currentACL = ACLManager.loadedACL(userID)
+
+            final_dic = {'installStatus': 0, 'error_message': 'CSF install is currently disabled.'}
+            final_json = json.dumps(final_dic)
+            return HttpResponse(final_json)
 
             if currentACL['admin'] == 1:
                 pass

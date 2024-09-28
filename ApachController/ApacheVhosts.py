@@ -33,6 +33,9 @@ class ApacheVhost:
         php80Path = '/etc/opt/remi/php80/php-fpm.d/'
         php81Path = '/etc/opt/remi/php81/php-fpm.d/'
         php82Path = '/etc/opt/remi/php82/php-fpm.d/'
+        php83Path = '/etc/opt/remi/php83/php-fpm.d/'
+        php84Path = '/etc/opt/remi/php84/php-fpm.d/'
+        php85Path = '/etc/opt/remi/php85/php-fpm.d/'
 
         serviceName = 'httpd'
 
@@ -47,11 +50,14 @@ class ApacheVhost:
         php71Path = '/etc/php/7.1/fpm/pool.d/'
         php72Path = '/etc/php/7.2/fpm/pool.d/'
         php73Path = '/etc/php/7.3/fpm/pool.d/'
-
         php74Path = '/etc/php/7.4/fpm/pool.d/'
+
         php80Path = '/etc/php/8.0/fpm/pool.d/'
         php81Path = '/etc/php/8.1/fpm/pool.d/'
         php82Path = '/etc/php/8.2/fpm/pool.d/'
+        php83Path = '/etc/php/8.3/fpm/pool.d/'
+        php84Path = '/etc/php/8.4/fpm/pool.d/'
+        php85Path = '/etc/php/8.5/fpm/pool.d/'
 
         serviceName = 'apache2'
 
@@ -89,6 +95,10 @@ class ApacheVhost:
             finalConfPath = ApacheVhost.php81Path + virtualHostName
         elif php == '82':
             finalConfPath = ApacheVhost.php82Path + virtualHostName
+        elif php == '83':
+            finalConfPath = ApacheVhost.php83Path + virtualHostName
+        elif php == '84':
+            finalConfPath = ApacheVhost.php84Path + virtualHostName
 
         return finalConfPath + '.conf'
 
@@ -129,6 +139,17 @@ class ApacheVhost:
 
         if os.path.exists(ApacheVhost.php82Path + virtualHostName):
             return ApacheVhost.php82Path + virtualHostName
+
+        if os.path.exists(ApacheVhost.php83Path + virtualHostName):
+            return ApacheVhost.php83Path + virtualHostName
+
+        if os.path.exists(ApacheVhost.php84Path + virtualHostName):
+            return ApacheVhost.php84Path + virtualHostName
+
+        if os.path.exists(ApacheVhost.php85Path + virtualHostName):
+            return ApacheVhost.php85Path + virtualHostName
+
+
 
     @staticmethod
     def GenerateSelfSignedSSL(virtualHostName):
@@ -374,9 +395,11 @@ class ApacheVhost:
         # General Configurations tab
         try:
             confFile = open(vhFile, "w+")
+            virtualHostName = vhFile.split('/')[6]
 
             currentConf = vhostConfs.OLSLBConf
             currentConf = currentConf.replace('{adminEmails}', administratorEmail)
+            currentConf = currentConf.replace('{domain}', virtualHostName)
 
             confFile.write(currentConf)
             confFile.close()
@@ -515,6 +538,7 @@ class ApacheVhost:
     @staticmethod
     def changePHP(phpVersion, vhFile):
         try:
+            logging.writeToFile(f"PHP version passed to Apache function: {phpVersion}")
 
             if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
                 sockPath = '/var/run/php-fpm/'
@@ -544,6 +568,8 @@ class ApacheVhost:
 
             finalConfPath = ApacheVhost.DecidePHPPath(php, virtualHostName)
 
+            logging.writeToFile(f'apache php final path: {finalConfPath}')
+
             confFile = open(finalConfPath, "w+")
             currentConf = vhostConfs.phpFpmPool
             currentConf = currentConf.replace('{www}', externalApp)
@@ -553,6 +579,14 @@ class ApacheVhost:
             currentConf = currentConf.replace('{group}', group)
 
             confFile.write(currentConf)
+
+            ### minor bug fix of updating default php conf user in selected fpm
+
+            if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
+                defaultConfPath = finalConfPath.replace(virtualHostName, 'www')
+
+                command = f"sed -i 's/www-data/apache/g' {defaultConfPath}"
+                ProcessUtilities.executioner(command)
 
             phpService = ApacheVhost.DecideFPMServiceName(phpVersion)
 

@@ -45,7 +45,6 @@ class CPBackupsV2(multi.Thread):
         multi.Thread.__init__(self)
         self.data = data
         try:
-
             self.function = data['function']
         except:
             pass
@@ -141,6 +140,12 @@ class CPBackupsV2(multi.Thread):
         if os.path.exists(self.StatusFile):
             os.remove(self.StatusFile)
 
+        # ### delete repo function
+        # try:
+        #     self.repo = data['BackendName']
+        # except:
+        #     pass
+
     def run(self):
         try:
             if self.function == 'InitiateBackup':
@@ -181,6 +186,7 @@ type = sftp
 host = {config["host"]}
 user = {config["user"]}
 pass = {ObsecurePassword}
+port = {config["sshPort"]}
 '''
 
                 command = f"echo '{content}' >> {self.ConfigFilePath}"
@@ -193,10 +199,16 @@ pass = {ObsecurePassword}
                 token = """{"access_token":"%s","token_type":"Bearer","refresh_token":"%s", "expiry":"2024-04-08T21:53:00.123456789Z"}""" % (
                 config["token"], config["refresh_token"])
 
+                if config["client_id"] == 'undefined':
+                    config["client_id"] = ''
+                    config["client_secret"] = ''
+
                 content = f'''
 [{config["accountname"]}]
 type = drive
 scope = drive
+client_id={config["client_id"]}
+client_secret={config["client_secret"]}
 token = {token}
 team_drive =
 '''
@@ -1039,10 +1051,19 @@ team_drive =
     def refresh_V2Gdive_token(refresh_token):
         try:
             # refresh_token = "1//09pPJHjUgyp09CgYIARAAGAkSNgF-L9IrZ0FLMhuKVfPEwmv_6neFto3JJ-B9uXBYu1kPPdsPhSk1OJXDBA3ZvC3v_AH9S1rTIQ"
+
+            if os.path.exists(ProcessUtilities.debugPath):
+                logging.CyberCPLogFileWriter.writeToFile('Current Token: ' + refresh_token )
+
             finalData = json.dumps({'refresh_token': refresh_token})
             r = requests.post("https://platform.cyberpersons.com/refreshToken", data=finalData
                               )
             newtoken = json.loads(r.text)['access_token']
+
+            if os.path.exists(ProcessUtilities.debugPath):
+                logging.CyberCPLogFileWriter.writeToFile('newtoken: ' + newtoken )
+                logging.CyberCPLogFileWriter.writeToFile(r.text)
+
             return newtoken
         except BaseException as msg:
             logging.CyberCPLogFileWriter.writeToFile(f'Error in tkupdate: {str(msg)}')
@@ -1262,13 +1283,25 @@ team_drive =
                     return 0, str(response.content)
 
                 # sudo mv filename /usr/bin/
-                command = 'wget -P /home/rustic https://github.com/rustic-rs/rustic/releases/download/%s/rustic-%s-x86_64-unknown-linux-musl.tar.gz' % (
-                version, version)
-                ProcessUtilities.executioner(command)
+                from plogical.acl import ACLManager
 
-                command = 'tar xzf /home/rustic/rustic-%s-x86_64-unknown-linux-musl.tar.gz -C /home/rustic//' % (
-                    version)
-                ProcessUtilities.executioner(command)
+                if ACLManager.ISARM():
+                    command = 'wget -P /home/rustic https://github.com/rustic-rs/rustic/releases/download/%s/rustic-%s-aarch64-unknown-linux-gnu.tar.gz' % (
+                        version, version)
+                    ProcessUtilities.executioner(command)
+
+                    command = 'tar xzf /home/rustic/rustic-%s-aarch64-unknown-linux-gnu.tar.gz -C /home/rustic//' % (
+                        version)
+                    ProcessUtilities.executioner(command)
+
+                else:
+                    command = 'wget -P /home/rustic https://github.com/rustic-rs/rustic/releases/download/%s/rustic-%s-x86_64-unknown-linux-musl.tar.gz' % (
+                version, version)
+                    ProcessUtilities.executioner(command)
+
+                    command = 'tar xzf /home/rustic/rustic-%s-x86_64-unknown-linux-musl.tar.gz -C /home/rustic//' % (
+                        version)
+                    ProcessUtilities.executioner(command)
 
                 command = 'sudo mv /home/rustic/rustic /usr/bin/'
                 ProcessUtilities.executioner(command)

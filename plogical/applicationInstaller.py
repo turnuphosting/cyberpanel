@@ -1,9 +1,14 @@
 #!/usr/local/CyberCP/bin/python
 import argparse
+import json
 import os, sys
 import shutil
 import time
+from io import StringIO
 
+import paramiko
+
+from ApachController.ApacheVhosts import ApacheVhost
 from loginSystem.models import Administrator
 from managePHP.phpManager import PHPManager
 from plogical.acl import ACLManager
@@ -17,7 +22,7 @@ import threading as multi
 from plogical.CyberCPLogFileWriter import CyberCPLogFileWriter as logging
 import subprocess
 from websiteFunctions.models import ChildDomains, Websites, WPSites, WPStaging, wpplugins, WPSitesBackup, \
-    RemoteBackupConfig
+    RemoteBackupConfig, NormalBackupDests
 from plogical import randomPassword
 from plogical.mysqlUtilities import mysqlUtilities
 from databases.models import Databases
@@ -83,9 +88,84 @@ class ApplicationInstaller(multi.Thread):
                 self.WPCreateBackup()
             elif self.installApp == 'RestoreWPbackupNow':
                 self.RestoreWPbackupNow()
+            elif self.installApp == 'UpgradeCP':
+                self.UpgradeCP()
+            elif self.installApp == 'StartOCRestore':
+                self.StartOCRestore()
 
         except BaseException as msg:
             logging.writeToFile(str(msg) + ' [ApplicationInstaller.run]')
+
+    def UpgradeCP(self):
+        command = f'/usr/local/CyberPanel/bin/python /usr/local/CyberCP/plogical/upgrade.py "SoftUpgrade,{self.data["branchSelect"]}"'
+        ProcessUtilities.executioner(command)
+
+    @staticmethod
+    def setupComposer():
+
+        if os.path.exists('composer.sh'):
+            os.remove('composer.sh')
+
+        if not os.path.exists('/usr/bin/composer'):
+            command = "wget https://cyberpanel.sh/composer.sh"
+            ProcessUtilities.executioner(command, 'root', True)
+
+            command = "chmod +x composer.sh"
+            ProcessUtilities.executioner(command, 'root', True)
+
+            command = "./composer.sh"
+            ProcessUtilities.executioner(command, 'root', True)
+
+    def InstallNodeJS(self):
+
+        command = 'npm'
+        result = ProcessUtilities.outputExecutioner(command)
+        if result.find('npm <command>') > -1:
+            return 1
+
+        if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
+            nodeV = ProcessUtilities.fetch_latest_lts_version_for_node()
+
+            if ACLManager.ISARM():
+                command = f'wget https://nodejs.org/dist/{nodeV}/node-{nodeV}-linux-arm64.tar.xz'
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = f'tar -xf node-{nodeV}-linux-arm64.tar.xz '
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = f'cp node-{nodeV}-linux-arm64/bin/node /usr/bin/node'
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = 'curl -qL https://www.npmjs.com/install.sh | sh'
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = f'rm -rf node-{nodeV}-linux-arm64*'
+                ProcessUtilities.executioner(command, 'root', True)
+            else:
+
+                command = f'wget https://nodejs.org/dist/{nodeV}/node-{nodeV}-linux-x64.tar.xz'
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = f'tar -xf node-{nodeV}-linux-x64.tar.xz'
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = f'cp node-{nodeV}-linux-x64/bin/node /usr/bin/node'
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = 'curl -qL https://www.npmjs.com/install.sh | sh'
+                ProcessUtilities.executioner(command, 'root', True)
+
+                command = f'rm -rf node-{nodeV}-linux-x64*'
+                ProcessUtilities.executioner(command, 'root', True)
+        else:
+            #command = 'curl -fsSL <https://deb.nodesource.com/setup_20.x> | sudo -E bash -'
+            #ProcessUtilities.executioner(command, 'root', True)
+
+            command = 'DEBIAN_FRONTEND=noninteractive apt-get install nodejs npm -y'
+            ProcessUtilities.executioner(command, 'root', True)
+
+        return 1
+
 
     def installMautic(self):
         try:
@@ -105,6 +185,10 @@ class ApplicationInstaller(multi.Thread):
             statusFile.writelines('Setting up paths,0')
             statusFile.close()
 
+            self.InstallNodeJS()
+            from plogical.upgrade import Upgrade
+            ApplicationInstaller.setupComposer()
+
 
             ### lets first find php path
 
@@ -112,19 +196,18 @@ class ApplicationInstaller(multi.Thread):
 
             vhFile = f'/usr/local/lsws/conf/vhosts/{domainName}/vhost.conf'
 
-            phpPath = phpUtilities.GetPHPVersionFromFile(vhFile)
+            phpPath = phpUtilities.GetPHPVersionFromFile(vhFile, domainName)
 
             ### basically for now php 8.0 is being checked
 
             if not os.path.exists(phpPath):
                 statusFile = open(tempStatusPath, 'w')
-                statusFile.writelines('PHP 8.0 missing installing now..,20')
+                statusFile.writelines('PHP 8.1 missing installing now..,20')
                 statusFile.close()
-                phpUtilities.InstallSaidPHP('80')
+                phpUtilities.InstallSaidPHP('81')
 
 
             FNULL = open(os.devnull, 'w')
-
 
 
             finalPath = ''
@@ -188,6 +271,13 @@ class ApplicationInstaller(multi.Thread):
                 command = 'mkdir -p ' + finalPath
                 ProcessUtilities.executioner(command, externalApp)
 
+            command = f'rm -rf {finalPath}*'
+            ProcessUtilities.executioner(command, externalApp)
+
+            command = f'rm -rf {finalPath}.*'
+            ProcessUtilities.executioner(command, externalApp)
+
+
             ## checking for directories/files
 
             if self.dataLossCheck(finalPath, tempStatusPath, externalApp) == 0:
@@ -199,16 +289,14 @@ class ApplicationInstaller(multi.Thread):
             statusFile.writelines('Downloading Mautic Core,30')
             statusFile.close()
 
-            command = "wget https://github.com/mautic/mautic/releases/download/%s/%s.zip" % (
-            ApplicationInstaller.MauticVersion, ApplicationInstaller.MauticVersion)
-            ProcessUtilities.outputExecutioner(command, externalApp, None, finalPath)
+            ### replace command with composer install
+            command = f'{phpPath} /usr/bin/composer create-project mautic/recommended-project:^5 {finalPath}'
+            ProcessUtilities.outputExecutioner(command, externalApp, None)
 
             statusFile = open(tempStatusPath, 'w')
             statusFile.writelines('Extracting Mautic Core,50')
             statusFile.close()
 
-            command = "unzip %s.zip" % (ApplicationInstaller.MauticVersion)
-            ProcessUtilities.outputExecutioner(command, externalApp, None, finalPath)
 
             ##
 
@@ -222,53 +310,60 @@ class ApplicationInstaller(multi.Thread):
             else:
                 finalURL = domainName
 
-            ACLManager.CreateSecureDir()
-            localDB = '%s/%s' % ('/usr/local/CyberCP/tmp', str(randint(1000, 9999)))
 
-            localDBContent = """<?php
-// Example local.php to test install (to adapt of course)
-$parameters = array(
-	// Do not set db_driver and mailer_from_name as they are used to assume Mautic is installed
-	'db_host' => 'localhost',
-	'db_table_prefix' => null,
-	'db_port' => 3306,
-	'db_name' => '%s',
-	'db_user' => '%s',
-	'db_password' => '%s',
-	'db_backup_tables' => true,
-	'db_backup_prefix' => 'bak_',
-	'admin_email' => '%s',
-	'admin_password' => '%s',
-	'mailer_transport' => null,
-	'mailer_host' => null,
-	'mailer_port' => null,
-	'mailer_user' => null,
-	'mailer_password' => null,
-	'mailer_api_key' => null,
-	'mailer_encryption' => null,
-	'mailer_auth_mode' => null,
-);""" % (dbName, dbUser, dbPassword, email, password)
+            command = f"{phpPath} -d memory_limit=256M bin/console mautic:install --db_host='localhost' --db_name='{dbName}' --db_user='{dbUser}' --db_password='{dbPassword}' --admin_username='{username}' --admin_email='{email}' --admin_password='{password}' --db_port='3306' http://{finalURL} -f"
 
-            writeToFile = open(localDB, 'w')
-            writeToFile.write(localDBContent)
-            writeToFile.close()
-
-            command = 'rm -rf %s/app/config/local.php' % (finalPath)
-            ProcessUtilities.executioner(command, externalApp)
-
-            command = 'chown %s:%s %s' % (externalApp, externalApp, localDB)
-            ProcessUtilities.executioner(command)
-
-            command = 'cp %s %s/app/config/local.php' % (localDB, finalPath)
-            ProcessUtilities.executioner(command, externalApp)
-
-            command = f"{phpPath} bin/console mautic:install http://%s -f" % (finalURL)
             result = ProcessUtilities.outputExecutioner(command, externalApp, None, finalPath)
 
             if result.find('Install complete') == -1:
                 raise BaseException(result)
 
-            os.remove(localDB)
+
+            command = f'{phpPath} -d memory_limit=256M bin/console  mautic:assets:generate'
+            ProcessUtilities.outputExecutioner(command, externalApp, None, finalPath)
+
+
+            ExistingDocRoot = ACLManager.FindDocRootOfSite(None, domainName)
+
+            if ExistingDocRoot.find('docroot') > -1:
+                ExistingDocRoot = ExistingDocRoot.replace('docroot', '')
+
+
+            NewDocRoot = f'{ExistingDocRoot}/docroot'
+            ACLManager.ReplaceDocRoot(None, domainName, NewDocRoot)
+
+            if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+
+                try:
+
+                    ExistingDocRootApache = ACLManager.FindDocRootOfSiteApache(None, domainName)
+
+                    if ExistingDocRootApache.find('docroot') == -1:
+                        NewDocRootApache = f'{ExistingDocRootApache}docroot'
+                    else:
+                        NewDocRootApache = ExistingDocRootApache
+
+                    if ExistingDocRootApache != None:
+                        ACLManager.ReplaceDocRootApache(None, domainName, NewDocRootApache)
+                except:
+                    pass
+
+            ### fix incorrect rules in .htaccess of mautic
+
+            if ProcessUtilities.decideServer() == ProcessUtilities.ent:
+                htAccessPath = f'{finalPath}docroot/.htaccess'
+
+                command = f"sed -i '/# Fallback for Apache < 2.4/,/<\/IfModule>/d' {htAccessPath}"
+                ProcessUtilities.executioner(command, externalApp, True)
+
+                command = f"sed -i '/# Apache 2.4+/,/<\/IfModule>/d' {htAccessPath}"
+                ProcessUtilities.executioner(command, externalApp, True)
+
+
+            #os.remove(localDB)
+            command = f"systemctl restart {ApacheVhost.serviceName}"
+            ProcessUtilities.normalExecutioner(command)
+
             installUtilities.reStartLiteSpeedSocket()
 
             statusFile = open(tempStatusPath, 'w')
@@ -560,11 +655,17 @@ $parameters = array(
 
             ### lets first find php path
 
+
             from plogical.phpUtilities import phpUtilities
 
             vhFile = f'/usr/local/lsws/conf/vhosts/{domainName}/vhost.conf'
 
-            phpPath = phpUtilities.GetPHPVersionFromFile(vhFile)
+            try:
+
+                phpPath = phpUtilities.GetPHPVersionFromFile(vhFile)
+            except:
+                phpPath = '/usr/local/lsws/lsphp80/bin/php'
+
 
             ### basically for now php 8.0 is being checked
 
@@ -573,6 +674,7 @@ $parameters = array(
                 statusFile.writelines('PHP 8.0 missing installing now..,20')
                 statusFile.close()
                 phpUtilities.InstallSaidPHP('80')
+
 
             finalPath = ''
             self.permPath = ''
@@ -726,6 +828,29 @@ $parameters = array(
 
             if result.find('Success:') == -1:
                 raise BaseException(result)
+
+
+            ### install CyberSMTP
+
+            # command = f"{FinalPHPPath} -d error_reporting=0 /usr/bin/wp plugin install https://github.com/usmannasir/CyberSMTPs/archive/refs/heads/main.zip --allow-root --path=" + finalPath
+            # result = ProcessUtilities.outputExecutioner(command, externalApp)
+            #
+            # if os.path.exists(ProcessUtilities.debugPath):
+            #     logging.writeToFile(str(result))
+            #
+            # if result.find('Success:') == -1:
+            #     raise BaseException(result)
+            #
+            # command = f"{FinalPHPPath} -d error_reporting=0 /usr/bin/wp plugin activate CyberSMTPs --allow-root --path=" + finalPath
+            # result = ProcessUtilities.outputExecutioner(command, externalApp)
+            #
+            # if os.path.exists(ProcessUtilities.debugPath):
+            #     logging.writeToFile(str(result))
+            #
+            # if result.find('Success:') == -1:
+            #     raise BaseException(result)
+
+
 
             try:
                 if self.extraArgs['updates']:
@@ -1742,9 +1867,9 @@ $parameters = array(
             DataToPass['websiteOwner'] = self.data['websiteOwner']
             DataToPass['package'] = self.data['package']
             DataToPass['ssl'] = 1
-            DataToPass['dkimCheck'] = 0
+            DataToPass['dkimCheck'] = 1
             DataToPass['openBasedir'] = 0
-            DataToPass['mailDomain'] = 0
+            DataToPass['mailDomain'] = 1
             DataToPass['apacheBackend'] = self.extraArgs['apacheBackend']
             UserID = self.data['adminID']
 
@@ -1769,7 +1894,8 @@ $parameters = array(
                 reutrntempath = coreResult1['tempStatusPath']
                 while (1):
                     lastLine = open(reutrntempath, 'r').read()
-                    logging.writeToFile("Error web creating lastline ....... %s" % lastLine)
+                    if os.path.exists(ProcessUtilities.debugPath):
+                        logging.writeToFile("Info web creating lastline ....... %s" % lastLine)
                     if lastLine.find('[200]') > -1:
                         break
                     elif lastLine.find('[404]') > -1:
@@ -6260,6 +6386,121 @@ $parameters = array(
                 pass
             logging.statusWriter(self.tempStatusPath, str(msg))
             return 0, str(msg)
+
+    def UpdateDownloadStatus(self, transferred, total):
+        percentage = (transferred / total) * 100
+
+        statusFile = open(self.tempStatusPath, 'w')
+        statusFile.writelines(f'{int(percentage)}% of file is downloaded from remote server..,50')
+        statusFile.close()
+
+
+
+    def StartOCRestore(self):
+        try:
+
+            id = self.extraArgs['id']
+            folder = self.extraArgs['folder']
+            backupfile = self.extraArgs['backupfile']
+            tempStatusPath = self.extraArgs['tempStatusPath']
+            userID = self.extraArgs['userID']
+            self.tempStatusPath = tempStatusPath
+
+            statusFile = open(tempStatusPath, 'w')
+            statusFile.writelines("Download started..,30")
+            statusFile.close()
+
+            from IncBackups.models import OneClickBackups
+            ocb = OneClickBackups.objects.get(pk=id)
+
+            # Load the private key
+
+            nbd = NormalBackupDests.objects.get(name=ocb.sftpUser)
+            ip = json.loads(nbd.config)['ip']
+
+            # Connect to the remote server using the private key
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # Read the private key content
+            private_key_path = '/root/.ssh/cyberpanel'
+            key_content = ProcessUtilities.outputExecutioner(f'cat {private_key_path}').rstrip('\n')
+
+            # Load the private key from the content
+            key_file = StringIO(key_content)
+            key = paramiko.RSAKey.from_private_key(key_file)
+            # Connect to the server using the private key
+            ssh.connect(ip, username=ocb.sftpUser, pkey=key)
+            sftp = ssh.open_sftp()
+
+            sftp.get(f'cpbackups/{folder}/{backupfile}', f'/home/cyberpanel/{backupfile}', callback=self.UpdateDownloadStatus)
+
+            if not os.path.exists('/home/backup'):
+                command = 'mkdir /home/backup'
+                ProcessUtilities.executioner(command)
+
+
+            command = f'mv /home/cyberpanel/{backupfile} /home/backup/{backupfile}'
+            ProcessUtilities.executioner(command)
+
+            from backup.backupManager import BackupManager
+            wm = BackupManager()
+            resp = wm.submitRestore({'backupFile': backupfile}, userID)
+
+            statusFile = open(tempStatusPath, 'w')
+            statusFile.writelines("Download finished..,60")
+            statusFile.close()
+
+            time.sleep(6)
+
+            if json.loads(resp.content)['restoreStatus'] == 0:
+                statusFile = open(tempStatusPath, 'w')
+                statusFile.writelines(f"Failed to restore backup. Error {json.loads(resp.content)['error_message']}. [404]")
+                statusFile.close()
+
+                command = f'rm -f /home/backup/{backupfile}'
+                ProcessUtilities.executioner(command)
+
+                return 0
+
+            if os.path.exists(ProcessUtilities.debugPath):
+                logging.writeToFile(f'Name of  of the backup file downloaded: {backupfile}')
+
+            while True:
+                resp = wm.restoreStatus({'backupFile': backupfile})
+
+                resp = json.loads(resp.content)
+
+                if os.path.exists(ProcessUtilities.debugPath):
+                    logging.writeToFile(f'Responce from status function: {str(resp)}')
+
+
+                if resp['abort'] == 1 and resp['running'] == 'Completed':
+                    statusFile = open(tempStatusPath, 'w')
+                    statusFile.writelines("Successfully Restored. [200]")
+                    statusFile.close()
+                    command = f'rm -f /home/backup/{backupfile}'
+                    ProcessUtilities.executioner(command)
+                    return 0
+                elif resp['abort'] == 1 and resp['running'] == 'Error':
+                    statusFile = open(tempStatusPath, 'w')
+                    statusFile.writelines(
+                        f"Failed to restore backup. Error {str(resp['status'])}. [404]")
+                    statusFile.close()
+                    command = f'rm -f /home/backup/{backupfile}'
+                    ProcessUtilities.executioner(command)
+                    break
+                else:
+                    statusFile = open(tempStatusPath, 'w')
+                    statusFile.writelines(f"{resp['status']},60")
+                    statusFile.close()
+                time.sleep(3)
+
+        except BaseException as msg:
+
+            statusFile = open(self.tempStatusPath, 'w')
+            statusFile.writelines(str(msg) + " [404]")
+            statusFile.close()
+            return 0
 
 
 def main():

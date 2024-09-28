@@ -1,5 +1,8 @@
+import json
 import os
 import sys
+
+import paramiko
 
 sys.path.append('/usr/local/CyberCP')
 import django
@@ -9,8 +12,8 @@ try:
     django.setup()
 except:
     pass
-
-
+import pysftp
+from plogical.randomPassword import generate_pass
 import pexpect
 from plogical import CyberCPLogFileWriter as logging
 import subprocess
@@ -39,7 +42,7 @@ from random import randint
 from plogical.processUtilities import ProcessUtilities
 
 try:
-    from websiteFunctions.models import Websites, ChildDomains, Backups
+    from websiteFunctions.models import Websites, ChildDomains, Backups, NormalBackupDests
     from databases.models import Databases
     from loginSystem.models import Administrator
     from plogical.dnsUtilities import DNS
@@ -49,7 +52,7 @@ except:
     pass
 
 VERSION = '2.3'
-BUILD = 4
+BUILD = 7
 
 
 ## I am not the monster that you think I am..
@@ -97,6 +100,11 @@ class backupUtilities:
 
             child = SubElement(metaFileXML, 'BUILD')
             child.text = str(BUILD)
+
+            ### try to take care of - https://github.com/usmannasir/cyberpanel/issues/1196
+
+            child = SubElement(metaFileXML, 'BackupWholeDir')
+            child.text = str(1)
 
             child = SubElement(metaFileXML, 'masterDomain')
             child.text = backupDomain
@@ -370,10 +378,12 @@ class backupUtilities:
             from shutil import copytree
 
             #copytree('/home/%s/public_html' % domainName, '%s/%s' % (tempStoragePath, 'public_html'))
-            command = f'cp -R /home/{domainName}/public_html {tempStoragePath}/public_html'
-
-            if ProcessUtilities.normalExecutioner(command) == 0:
-                 raise BaseException(f'Failed to run cp command during backup generation.')
+            #command = f'cp -R /home/{domainName}/public_html {tempStoragePath}/public_html'
+            ### doing backup of whole dir and keeping it in public_html folder will restore from here - ref https://github.com/usmannasir/cyberpanel/issues/1196
+            command = f"rsync -av --ignore-errors --exclude=.wp-cli --exclude=logs --exclude=backup --exclude=lscache /home/{domainName}/ {tempStoragePath}/public_html/"
+            ProcessUtilities.normalExecutioner(command)
+            # if ProcessUtilities.normalExecutioner(command) == 0:
+            #      raise BaseException(f'Failed to run cp command during backup generation.')
 
             # make_archive(os.path.join(tempStoragePath,"public_html"), 'gztar', os.path.join("/home",domainName,"public_html"))
 
@@ -402,7 +412,14 @@ class backupUtilities:
             pass
 
     @staticmethod
-    def BackupRoot(tempStoragePath, backupName, backupPath, metaPath=None, externalApp = None):
+    def BackupRoot(tempStoragePath, backupName, backupPath, metaPath=None, externalApp = None, CPHomeStorage=None):
+
+        ## /home/example.com/backup/backup-example.com-02.13.2018_10-24-52 -- tempStoragePath
+        ## /home/example.com/backup - backupPath
+        ## /home/backup/<random_number> - CPHomeStorage
+
+        ### CPHomeStorage /home/cyberpanel/<random_number>
+
 
         pidFile = '%sBackupRoot' % (backupPath)
 
@@ -421,11 +438,13 @@ class backupUtilities:
 
         if os.path.exists(sslStoragePath):
             try:
-                copy(os.path.join(sslStoragePath, "cert.pem"), os.path.join(tempStoragePath, domainName + ".cert.pem"))
-                copy(os.path.join(sslStoragePath, "fullchain.pem"),
-                     os.path.join(tempStoragePath, domainName + ".fullchain.pem"))
-                copy(os.path.join(sslStoragePath, "privkey.pem"),
-                     os.path.join(tempStoragePath, domainName + ".privkey.pem"))
+
+                copy(os.path.join(sslStoragePath, "cert.pem"), os.path.join(CPHomeStorage, domainName + ".cert.pem"))
+
+                copy(os.path.join(sslStoragePath, "fullchain.pem"),os.path.join(CPHomeStorage, domainName + ".fullchain.pem"))
+
+                copy(os.path.join(sslStoragePath, "privkey.pem"),os.path.join(CPHomeStorage, domainName + ".privkey.pem"))
+
             except BaseException as msg:
                 logging.CyberCPLogFileWriter.writeToFile(f'{str(msg)}. [283:startBackup]')
 
@@ -437,12 +456,15 @@ class backupUtilities:
 
         ### If domain is suspended, this path wont exists, so please check for other
 
+
         if os.path.exists(completPathToConf):
-            copy(completPathToConf, tempStoragePath + '/vhost.conf')
+            copy(completPathToConf, f'{CPHomeStorage}/vhost.conf')
         else:
             completPathToConf = f'{backupUtilities.Server_root}/conf/vhosts/{domainName}-suspended/vhost.conf'
             if os.path.exists(completPathToConf):
-                copy(completPathToConf, tempStoragePath + '/vhost.conf')
+                #copy(completPathToConf, tempStoragePath + '/vhost.conf')
+
+                copy(completPathToConf, f'{CPHomeStorage}/vhost.conf')
 
         childDomains = backupMetaData.findall('ChildDomains/domain')
 
@@ -454,12 +476,17 @@ class backupUtilities:
 
 
                 completPathToConf = f'{backupUtilities.Server_root}/conf/vhosts/{actualChildDomain}/vhost.conf'
+                TempConfPath = f'/home/cyberpanel/{actualChildDomain}.vhost.conf'
+
                 if os.path.exists(completPathToConf):
-                    copy(completPathToConf, f'{tempStoragePath}/{actualChildDomain}.vhost.conf')
+                    #copy(completPathToConf, f'{tempStoragePath}/{actualChildDomain}.vhost.conf')
+                    copy(completPathToConf, f'{CPHomeStorage}/{actualChildDomain}.vhost.conf')
+
                 else:
                     completPathToConf = f'{backupUtilities.Server_root}/conf/vhosts/{actualChildDomain}-suspended/vhost.conf'
                     if os.path.exists(completPathToConf):
-                        copy(completPathToConf, f'{tempStoragePath}/{actualChildDomain}.vhost.conf')
+                        #copy(completPathToConf, f'{tempStoragePath}/{actualChildDomain}.vhost.conf')
+                        copy(completPathToConf, f'{CPHomeStorage}/{actualChildDomain}.vhost.conf')
 
 
                 ### Storing SSL for child domainsa
@@ -468,22 +495,25 @@ class backupUtilities:
 
                 if os.path.exists(sslStoragePath):
                     try:
-                        copy(os.path.join(sslStoragePath, "cert.pem"),
-                             os.path.join(tempStoragePath, actualChildDomain + ".cert.pem"))
-                        copy(os.path.join(sslStoragePath, "fullchain.pem"),
-                             os.path.join(tempStoragePath, actualChildDomain + ".fullchain.pem"))
-                        copy(os.path.join(sslStoragePath, "privkey.pem"),
-                             os.path.join(tempStoragePath, actualChildDomain + ".privkey.pem"))
-                        make_archive(os.path.join(tempStoragePath, "sslData-" + domainName), 'gztar',
-                                     sslStoragePath)
+
+                        #copy(os.path.join(sslStoragePath, "cert.pem"), os.path.join(tempStoragePath, actualChildDomain + ".cert.pem"))
+                        copy(os.path.join(sslStoragePath, "cert.pem"),os.path.join(CPHomeStorage, actualChildDomain + ".cert.pem"))
+
+                        #copy(os.path.join(sslStoragePath, "fullchain.pem"),os.path.join(tempStoragePath, actualChildDomain + ".fullchain.pem"))
+                        copy(os.path.join(sslStoragePath, "fullchain.pem"),os.path.join(CPHomeStorage, actualChildDomain + ".fullchain.pem"))
+
+                        #copy(os.path.join(sslStoragePath, "privkey.pem"),os.path.join(tempStoragePath, actualChildDomain + ".privkey.pem"))
+                        copy(os.path.join(sslStoragePath, "privkey.pem"),os.path.join(CPHomeStorage, actualChildDomain + ".privkey.pem"))
+
+                        #make_archive(os.path.join(tempStoragePath, "sslData-" + domainName), 'gztar', sslStoragePath)
                     except:
                         pass
+                ## no need to do this as on line 380 whole dir will be backuped up
 
-                if childPath.find(f'/home/{domainName}/public_html') == -1:
-                    # copy_tree(childPath, '%s/%s-docroot' % (tempStoragePath, actualChildDomain))
-                    command = f'cp -R {childPath} {tempStoragePath}/{actualChildDomain}-docroot'
-                    ProcessUtilities.executioner(command)
-
+                # if childPath.find(f'/home/{domainName}/public_html') == -1:
+                #     # copy_tree(childPath, '%s/%s-docroot' % (tempStoragePath, actualChildDomain))
+                #     command = f'cp -R {childPath} {tempStoragePath}/{actualChildDomain}-docroot'
+                #     ProcessUtilities.executioner(command, externalApp)
         except BaseException as msg:
             pass
 
@@ -511,7 +541,7 @@ class backupUtilities:
 
             if os.path.exists(emailPath):
                 # copy_tree(emailPath, '%s/vmail' % (tempStoragePath), preserve_symlinks=True)
-                command = f'cp -R {emailPath} {tempStoragePath}/vmail'
+                command = f'cp -R {emailPath} {CPHomeStorage}/vmail'
                 ProcessUtilities.executioner(command)
 
             ## shutil.make_archive. Creating final package.
@@ -522,8 +552,28 @@ class backupUtilities:
                 command = f"echo 'Preparing final compressed package..' > {status}"
                 ProcessUtilities.executioner(command, externalApp, True)
 
-            make_archive(os.path.join(backupPath, backupName), 'gztar', tempStoragePath)
-            rmtree(tempStoragePath)
+
+            ### change own of CPHomeStorage and move data
+
+            command = f'chown -R {externalApp}:{externalApp} {CPHomeStorage}'
+            ProcessUtilities.executioner(command)
+
+            command = f'mv {CPHomeStorage}/* {tempStoragePath}/'
+            ProcessUtilities.executioner(command, externalApp, True)
+
+            #make_archive(os.path.join(backupPath, backupName), 'gztar', tempStoragePath)
+            #rmtree(tempStoragePath)
+
+            command = f'tar -czf {backupPath}/{backupName}.tar.gz -C {tempStoragePath} .'
+            ProcessUtilities.executioner(command, externalApp, True)
+
+            ### remove leftover storages
+
+            command = f'rm -rf {tempStoragePath}'
+            ProcessUtilities.executioner(command, externalApp)
+
+            command = f'rm -rf {CPHomeStorage}'
+            ProcessUtilities.executioner(command)
 
             ###
 
@@ -561,6 +611,12 @@ class backupUtilities:
             else:
                 command = f"echo '%s. [511:BackupRoot][[5009]]' > {status}"
                 ProcessUtilities.executioner(command, externalApp)
+
+            command = f'rm -rf {tempStoragePath}'
+            ProcessUtilities.executioner(command, externalApp)
+
+            command = f'rm -rf {CPHomeStorage}'
+            ProcessUtilities.executioner(command)
 
     @staticmethod
     def initiateBackup(tempStoragePath, backupName, backupPath):
@@ -643,8 +699,11 @@ class backupUtilities:
 
             ## Create Configurations
 
-            result = virtualHostUtilities.createVirtualHost(domain, siteUser.email, phpSelection, externalApp, 0, 1, 0,
-                                                            siteUser.userName, 'Default', 0)
+            # result = virtualHostUtilities.createVirtualHost(domain, siteUser.email, phpSelection, externalApp, 0, 1, 0,
+            #                                                 siteUser.userName, 'Default', 0)
+            result = virtualHostUtilities.createVirtualHost(domain, siteUser.email, phpSelection, externalApp, 1, 1, 0,
+                                                   siteUser.userName, 'Default', 0, None,
+                                                   1)
 
             if result[0] == 0:
                 raise BaseException(result[1])
@@ -762,6 +821,11 @@ class backupUtilities:
             except:
                 twoPointO = 0
 
+            try:
+                BackupWholeDir = int(backupMetaData.find('BackupWholeDir').text)
+            except:
+                BackupWholeDir = 0
+
             result = backupUtilities.createWebsiteFromBackup(backupName, dir)
 
             if result[0] == 1:
@@ -868,17 +932,19 @@ class backupUtilities:
                         if float(version) > 2.0 or float(build) > 0:
                             if path.find('/home/%s/public_html' % masterDomain) == -1:
 
-                                #copy_tree('%s/%s-docroot' % (completPath, domain), path)
+                                if BackupWholeDir == 0:
 
-                                ## First remove if already exists
+                                    #copy_tree('%s/%s-docroot' % (completPath, domain), path)
 
-                                command = 'rm -rf %s' % (path)
-                                ProcessUtilities.executioner(command)
+                                    ## First remove if already exists
 
-                                ##
+                                    command = 'rm -rf %s' % (path)
+                                    ProcessUtilities.executioner(command)
 
-                                command = 'cp -R %s/%s-docroot %s' % (completPath, domain, path)
-                                ProcessUtilities.executioner(command)
+                                    ##
+
+                                    command = 'cp -R %s/%s-docroot %s' % (completPath, domain, path)
+                                    ProcessUtilities.executioner(command)
 
                         continue
                     else:
@@ -1004,8 +1070,11 @@ class backupUtilities:
                     ProcessUtilities.executioner(command)
 
                     ##
-
-                    command = 'cp -R %s/public_html %s' % (completPath, websiteHome)
+                    if BackupWholeDir:
+                        #command = 'cp -R %s/public_html/* %s/*' % (completPath, websiteHome)
+                        command = f'rsync -av {completPath}/public_html/ /home/{masterDomain}'
+                    else:
+                        command = 'cp -R %s/public_html %s' % (completPath, websiteHome)
                     ProcessUtilities.executioner(command)
 
             ## extracting email accounts
@@ -1058,7 +1127,6 @@ class backupUtilities:
 
             logging.CyberCPLogFileWriter.statusWriter(status, "Done")
 
-            installUtilities.reStartLiteSpeed()
 
             ## Fix permissions
 
@@ -1066,6 +1134,8 @@ class backupUtilities:
 
             fm = FileManager(None, None)
             fm.fixPermissions(masterDomain)
+
+            installUtilities.reStartLiteSpeed()
 
         except BaseException as msg:
             status = os.path.join(completPath, 'status')
@@ -1080,143 +1150,236 @@ class backupUtilities:
         except BaseException as msg:
             logging.CyberCPLogFileWriter.writeToFile(str(msg) + " [initiateRestore]")
 
+    # @staticmethod
+    # def sendKey(IPAddress, password, port='22', user='root'):
+    #     try:
+    #
+    #         expectation = []
+    #         expectation.append("password:")
+    #         expectation.append("Password:")
+    #         expectation.append("Permission denied")
+    #         expectation.append("100%")
+    #
+    #         ## Temp changes
+    #
+    #         command = 'chmod 600 %s' % ('/root/.ssh/cyberpanel.pub')
+    #         ProcessUtilities.executioner(command)
+    #
+    #         command = "scp -o StrictHostKeyChecking=no -P " + port + " /root/.ssh/cyberpanel.pub " + user + "@" + IPAddress + ":~/.ssh/authorized_keys"
+    #         setupKeys = pexpect.spawn(command, timeout=3)
+    #
+    #         if os.path.exists(ProcessUtilities.debugPath):
+    #             logging.CyberCPLogFileWriter.writeToFile(command)
+    #
+    #         index = setupKeys.expect(expectation)
+    #
+    #         ## on first login attempt send password
+    #
+    #         if index == 0:
+    #             setupKeys.sendline(password)
+    #             setupKeys.expect("100%")
+    #             setupKeys.wait()
+    #         elif index == 1:
+    #             setupKeys.sendline(password)
+    #             setupKeys.expect("100%")
+    #             setupKeys.wait()
+    #         elif index == 2:
+    #             return [0, 'Please enable password authentication on your remote server.']
+    #         elif index == 3:
+    #             pass
+    #         else:
+    #             raise BaseException
+    #
+    #         ## Temp changes
+    #
+    #         command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
+    #         ProcessUtilities.executioner(command)
+    #
+    #         return [1, "None"]
+    #
+    #     except pexpect.TIMEOUT as msg:
+    #
+    #         command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
+    #         ProcessUtilities.executioner(command)
+    #
+    #         logging.CyberCPLogFileWriter.writeToFile(str(msg) + " [sendKey]")
+    #         return [0, "TIMEOUT [sendKey]"]
+    #     except pexpect.EOF as msg:
+    #
+    #         command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
+    #         ProcessUtilities.executioner(command)
+    #
+    #         logging.CyberCPLogFileWriter.writeToFile(str(msg) + " [sendKey]")
+    #         return [0, "EOF [sendKey]"]
+    #     except BaseException as msg:
+    #
+    #         command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
+    #         ProcessUtilities.executioner(command)
+    #
+    #         logging.CyberCPLogFileWriter.writeToFile(str(msg) + " [sendKey]")
+    #         return [0, str(msg) + " [sendKey]"]
+
+    # @staticmethod
+    # def setupSSHKeys(IPAddress, password, port='22', user='root'):
+    #     try:
+    #         ## Checking for host verification
+    #
+    #         backupUtilities.host_key_verification(IPAddress)
+    #
+    #         if backupUtilities.checkIfHostIsUp(IPAddress) == 1:
+    #             pass
+    #         else:
+    #             logging.CyberCPLogFileWriter.writeToFile("Host is Down.")
+    #             # return [0,"Host is Down."]
+    #
+    #         expectation = []
+    #         expectation.append("password:")
+    #         expectation.append("Password:")
+    #         expectation.append("Permission denied")
+    #         expectation.append("File exists")
+    #
+    #         command = "ssh -o StrictHostKeyChecking=no -p " + port + ' ' + user + "@" + IPAddress + ' "mkdir ~/.ssh || rm -f ~/.ssh/temp && rm -f ~/.ssh/authorized_temp && cp ~/.ssh/authorized_keys ~/.ssh/temp || chmod 700 ~/.ssh || chmod g-w ~"'
+    #         setupKeys = pexpect.spawn(command, timeout=3)
+    #
+    #         if os.path.exists(ProcessUtilities.debugPath):
+    #             logging.CyberCPLogFileWriter.writeToFile(command)
+    #
+    #         index = setupKeys.expect(expectation)
+    #
+    #         ## on first login attempt send password
+    #
+    #         if index == 0:
+    #             setupKeys.sendline(password)
+    #         elif index == 1:
+    #             setupKeys.sendline(password)
+    #         elif index == 2:
+    #             return [0, 'Please enable password authentication on your remote server.']
+    #         elif index == 3:
+    #             pass
+    #         else:
+    #             raise BaseException
+    #
+    #         ## if it again give you password, than provided password is wrong
+    #
+    #         expectation = []
+    #         expectation.append("please try again.")
+    #         expectation.append("Password:")
+    #         expectation.append(pexpect.EOF)
+    #
+    #         index = setupKeys.expect(expectation)
+    #
+    #         if index == 0:
+    #             return [0, "Wrong Password!"]
+    #         elif index == 1:
+    #             return [0, "Wrong Password!"]
+    #         elif index == 2:
+    #             setupKeys.wait()
+    #
+    #             sendKey = backupUtilities.sendKey(IPAddress, password, port, user)
+    #
+    #             if sendKey[0] == 1:
+    #                 return [1, "None"]
+    #             else:
+    #                 return [0, sendKey[1]]
+    #
+    #
+    #     except pexpect.TIMEOUT as msg:
+    #         return [0, str(msg) + " [TIMEOUT setupSSHKeys]"]
+    #     except BaseException as msg:
+    #         return [0, str(msg) + " [setupSSHKeys]"]
+
     @staticmethod
     def sendKey(IPAddress, password, port='22', user='root'):
         try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(IPAddress, port=int(port), username=user, password=password)
 
-            expectation = []
-            expectation.append("password:")
-            expectation.append("Password:")
-            expectation.append("Permission denied")
-            expectation.append("100%")
-
-            ## Temp changes
+            if os.path.exists('/root/.ssh/cyberpanel.pub'):
+                pass
+            else:
+                command = "ssh-keygen -f /root/.ssh/cyberpanel -t rsa -N ''"
+                ProcessUtilities.executioner(command, 'root', True)
 
             command = 'chmod 600 %s' % ('/root/.ssh/cyberpanel.pub')
             ProcessUtilities.executioner(command)
 
-            command = "scp -o StrictHostKeyChecking=no -P " + port + " /root/.ssh/cyberpanel.pub " + user + "@" + IPAddress + ":~/.ssh/authorized_keys"
-            setupKeys = pexpect.spawn(command, timeout=3)
+            sftp = ssh.open_sftp()
+            sftp.put('/root/.ssh/cyberpanel.pub', '.ssh/authorized_keys')
+            sftp.close()
 
-            if os.path.exists(ProcessUtilities.debugPath):
-                logging.CyberCPLogFileWriter.writeToFile(command)
+            ssh.exec_command('chmod 600 .ssh/authorized_keys')
 
-            index = setupKeys.expect(expectation)
-
-            ## on first login attempt send password
-
-            if index == 0:
-                setupKeys.sendline(password)
-                setupKeys.expect("100%")
-                setupKeys.wait()
-            elif index == 1:
-                setupKeys.sendline(password)
-                setupKeys.expect("100%")
-                setupKeys.wait()
-            elif index == 2:
-                return [0, 'Please enable password authentication on your remote server.']
-            elif index == 3:
-                pass
-            else:
-                raise BaseException
-
-            ## Temp changes
+            ssh.close()
 
             command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
             ProcessUtilities.executioner(command)
 
             return [1, "None"]
 
-        except pexpect.TIMEOUT as msg:
 
-            command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
-            ProcessUtilities.executioner(command)
-
-            logging.CyberCPLogFileWriter.writeToFile(str(msg) + " [sendKey]")
-            return [0, "TIMEOUT [sendKey]"]
-        except pexpect.EOF as msg:
-
-            command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
-            ProcessUtilities.executioner(command)
-
-            logging.CyberCPLogFileWriter.writeToFile(str(msg) + " [sendKey]")
-            return [0, "EOF [sendKey]"]
-        except BaseException as msg:
-
-            command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
-            ProcessUtilities.executioner(command)
-
-            logging.CyberCPLogFileWriter.writeToFile(str(msg) + " [sendKey]")
-            return [0, str(msg) + " [sendKey]"]
+        except paramiko.AuthenticationException:
+            return [0, 'Authentication failed. [sendKey]']
+        except paramiko.SSHException as e:
+            return [0, f'SSH error: {str(e)} [sendKey]']
+        except Exception as e:
+            return [0, f'General Error: {str(e)} [sendKey]']
 
     @staticmethod
     def setupSSHKeys(IPAddress, password, port='22', user='root'):
         try:
-            ## Checking for host verification
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            if password != 'NOT-NEEDED':
 
-            backupUtilities.host_key_verification(IPAddress)
+                ssh.connect(IPAddress, port=int(port), username=user, password=password)
+                commands = [
+                    "mkdir -p .ssh",
+                    "rm -f .ssh/temp",
+                    "rm -f .ssh/authorized_temp",
+                    "cp .ssh/authorized_keys .ssh/temp",
+                    "chmod 700 .ssh",
+                    "chmod g-w ~",
+                ]
 
-            if backupUtilities.checkIfHostIsUp(IPAddress) == 1:
-                pass
-            else:
-                logging.CyberCPLogFileWriter.writeToFile("Host is Down.")
-                # return [0,"Host is Down."]
+                for command in commands:
+                    try:
+                        ssh.exec_command(command)
+                    except BaseException as msg:
+                        logging.CyberCPLogFileWriter.writeToFile(
+                            f'Error executing remote command {command}. Error {str(msg)}')
 
-            expectation = []
-            expectation.append("password:")
-            expectation.append("Password:")
-            expectation.append("Permission denied")
-            expectation.append("File exists")
-
-            command = "ssh -o StrictHostKeyChecking=no -p " + port + ' ' + user + "@" + IPAddress + ' "mkdir ~/.ssh || rm -f ~/.ssh/temp && rm -f ~/.ssh/authorized_temp && cp ~/.ssh/authorized_keys ~/.ssh/temp || chmod 700 ~/.ssh || chmod g-w ~"'
-            setupKeys = pexpect.spawn(command, timeout=3)
-
-            if os.path.exists(ProcessUtilities.debugPath):
-                logging.CyberCPLogFileWriter.writeToFile(command)
-
-            index = setupKeys.expect(expectation)
-
-            ## on first login attempt send password
-
-            if index == 0:
-                setupKeys.sendline(password)
-            elif index == 1:
-                setupKeys.sendline(password)
-            elif index == 2:
-                return [0, 'Please enable password authentication on your remote server.']
-            elif index == 3:
-                pass
-            else:
-                raise BaseException
-
-            ## if it again give you password, than provided password is wrong
-
-            expectation = []
-            expectation.append("please try again.")
-            expectation.append("Password:")
-            expectation.append(pexpect.EOF)
-
-            index = setupKeys.expect(expectation)
-
-            if index == 0:
-                return [0, "Wrong Password!"]
-            elif index == 1:
-                return [0, "Wrong Password!"]
-            elif index == 2:
-                setupKeys.wait()
+                ssh.close()
 
                 sendKey = backupUtilities.sendKey(IPAddress, password, port, user)
 
                 if sendKey[0] == 1:
+                    command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
+                    ProcessUtilities.executioner(command)
                     return [1, "None"]
                 else:
+                    command = 'chmod 644 %s' % ('/root/.ssh/cyberpanel.pub')
+                    ProcessUtilities.executioner(command)
                     return [0, sendKey[1]]
+            else:
+                # Load the private key
+                private_key_path = '/root/.ssh/cyberpanel'
+                keyPrivate = paramiko.RSAKey(filename=private_key_path)
 
+                # Connect to the remote server using the private key
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(IPAddress, username=user, pkey=keyPrivate)
 
-        except pexpect.TIMEOUT as msg:
-            return [0, str(msg) + " [TIMEOUT setupSSHKeys]"]
-        except BaseException as msg:
-            return [0, str(msg) + " [setupSSHKeys]"]
+                return [1, "None"]
+
+        except paramiko.AuthenticationException:
+            return [0, 'Authentication failed. [setupSSHKeys]']
+        except paramiko.SSHException as e:
+            return [0, f'SSH error: {str(e)} [setupSSHKeys]']
+        except Exception as e:
+            return [0, f'General Error: {str(e)} [setupSSHKeys]']
+
 
     @staticmethod
     def checkIfHostIsUp(IPAddress):
@@ -2000,9 +2163,46 @@ def submitBackupCreation(tempStoragePath, backupName, backupPath, backupDomain):
         ## backup-example.com-02.13.2018_10-24-52 -- backup name
         ## /home/example.com/backup - backupPath
         ## /home/cyberpanel/1047.xml - metaPath
+        ## /home/backup/<random_number> - CPHomeStorage
 
         status = os.path.join(backupPath, 'status')
+
+        ### Lets first see if enough space for backups is available
+
+        from plogical.IncScheduler import IncScheduler
+        import json
+        from plogical.getSystemInformation import SystemInformation
+        #
+        # IncScheduler.CalculateAndUpdateDiskUsage()
+
+        try:
+
+            website = Websites.objects.get(domain=backupDomain)
+            DiskUsageOfSite = json.loads(website.config)['DiskUsage']
+            used_disk, free_disk, percent_used = SystemInformation.GetRemainingDiskUsageInMBs()
+
+
+            if float(free_disk) <= float(DiskUsageOfSite):
+                command = f"echo 'Disk space exceeded the website size. [2065][5009]' > %s"
+                ProcessUtilities.executioner(command, website.externalApp)
+                return 0
+        except:
+            pass
+
+        ###
+
+
+
         website = Websites.objects.get(domain=backupDomain)
+
+        ##
+
+        CPHomeStorage = f'/home/backup/{generate_pass(5)}'
+
+        ### Now make this random directory to store data so taht we dont run any root file operations in user home dir
+
+        command = f'mkdir -p {CPHomeStorage} && chown {website.externalApp}:{website.externalApp} {CPHomeStorage}'
+        ProcessUtilities.executioner(command, 'root', True)
 
         ##
 
@@ -2059,14 +2259,16 @@ def submitBackupCreation(tempStoragePath, backupName, backupPath, backupDomain):
         databases = backupMetaData.findall('Databases/database')
 
         for database in databases:
+
             dbName = database.find('dbName').text
             res = mysqlUtilities.mysqlUtilities.createDatabaseBackup(dbName, '/home/cyberpanel')
             if res == 0:
                 ## This login can be further improved later.
                 logging.CyberCPLogFileWriter.writeToFile('Failed to create database backup for %s. This could be false positive, moving on.' % (dbName))
 
-            command = 'mv /home/cyberpanel/%s.sql %s/%s.sql' % (dbName, tempStoragePath, dbName)
-            ProcessUtilities.executioner(command, 'root')
+            command = f'mv /home/cyberpanel/{dbName}.sql {CPHomeStorage}/{dbName}.sql'
+            ProcessUtilities.executioner(command)
+
 
         ##
 
@@ -2075,12 +2277,12 @@ def submitBackupCreation(tempStoragePath, backupName, backupPath, backupDomain):
         execPath = "sudo nice -n 10 /usr/local/CyberCP/bin/python " + virtualHostUtilities.cyberPanel + "/plogical/backupUtilities.py"
         execPath = execPath + " BackupRoot --tempStoragePath " + tempStoragePath + " --backupName " \
                    + backupName + " --backupPath " + backupPath + ' --backupDomain ' + backupDomain + ' --metaPath %s --externalApp %s' % (
-                       result[2], website.externalApp)
+                       result[2], website.externalApp) + f' --CPHomeStorage {CPHomeStorage}'
 
         ProcessUtilities.executioner(execPath, 'root')
 
-        command = 'chown -R %s:%s %s' % (website.externalApp, website.externalApp, backupPath)
-        ProcessUtilities.executioner(command)
+        #command = 'chown -R %s:%s %s' % (website.externalApp, website.externalApp, backupPath)
+        #ProcessUtilities.executioner(command)
 
         command = f'rm -f {result[2]}'
         ProcessUtilities.executioner(command, 'cyberpanel')
@@ -2157,6 +2359,37 @@ def getConnectionStatus(ipAddress):
     except BaseException as msg:
         print(str(msg))
 
+def FetchOCBackupsFolders(id, owner):
+    # Load the private key
+    private_key_path = '/root/.ssh/cyberpanel'
+    keyPrivate = paramiko.RSAKey(filename=private_key_path)
+
+    from IncBackups.models import OneClickBackups
+    admin = Administrator.objects.get(userName=owner)
+    ocb = OneClickBackups.objects.get(pk=id, owner=admin)
+
+    nbd = NormalBackupDests.objects.get(name=ocb.sftpUser)
+    ip = json.loads(nbd.config)['ip']
+
+    # Connect to the remote server using the private key
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(ip, username=ocb.sftpUser, pkey=keyPrivate)
+
+    # Command to list directories under the specified path
+    command = f"ls -d cpbackups/*/"
+
+    # Execute the command
+    stdin, stdout, stderr = ssh.exec_command(command)
+
+    # Read the results
+    directories = stdout.read().decode().splitlines()
+
+    # Print directories
+    for directory in directories:
+        print(directory)
+
+
 
 def main():
     parser = argparse.ArgumentParser(description='CyberPanel Backup Generator')
@@ -2199,6 +2432,14 @@ def main():
     parser.add_argument('--planName', help='')
     parser.add_argument('--externalApp', help='')
 
+    ### CPHomeStorage
+
+    parser.add_argument('--CPHomeStorage', help='')
+
+    ### id
+
+    parser.add_argument('--id', help='')
+
 
     args = parser.parse_args()
 
@@ -2215,7 +2456,7 @@ def main():
     elif args.function == "startBackup":
         backupUtilities.startBackup(args.tempStoragePath, args.backupName, args.backupPath, args.metaPath)
     elif args.function == "BackupRoot":
-        backupUtilities.BackupRoot(args.tempStoragePath, args.backupName, args.backupPath, args.metaPath, args.externalApp)
+        backupUtilities.BackupRoot(args.tempStoragePath, args.backupName, args.backupPath, args.metaPath, args.externalApp, args.CPHomeStorage)
     elif args.function == 'CloudBackup':
         extraArgs = {}
         extraArgs['domain'] = args.backupDomain
@@ -2246,6 +2487,9 @@ def main():
         extraArgs['planName'] = args.planName
         bu = backupUtilities(extraArgs)
         bu.SubmitS3BackupRestore()
+
+    elif args.function == 'FetchOCBackupsFolders':
+        FetchOCBackupsFolders(args.id, args.user)
 
 if __name__ == "__main__":
     main()

@@ -10,12 +10,99 @@ try:
     from websiteFunctions.models import ChildDomains, Websites
 except:
     pass
+from plogical.acl import ACLManager
 
 
 class sslUtilities:
 
     Server_root = "/usr/local/lsws"
     redisConf = '/usr/local/lsws/conf/dvhost_redis.conf'
+
+    DONT_ISSUE = 0
+    ISSUE_SELFSIGNED = 1
+    ISSUE_SSL = 2
+
+    @staticmethod
+    def getDomainsCovered(cert_path):
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.backends import default_backend
+            with open(cert_path, 'rb') as cert_file:
+                cert_data = cert_file.read()
+                cert = x509.load_pem_x509_certificate(cert_data, default_backend())
+
+                # Check for the Subject Alternative Name (SAN) extension
+                san_extension = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+
+                if san_extension:
+                    # Extract and print the domains from SAN
+                    san_domains = san_extension.value.get_values_for_type(x509.DNSName)
+                    try:
+                        logging.CyberCPLogFileWriter.writeToFile(f'Covered domains: {str(san_domains)}')
+                    except:
+                        pass
+                    return 1, san_domains
+                else:
+                    # If SAN is not present, return the Common Name as a fallback
+                    return 0, None
+        except BaseException as msg:
+            return 0, str(msg)
+
+
+    @staticmethod
+    def CheckIfSSLNeedsToBeIssued(virtualHostName):
+        #### if website already have an SSL, better not issue again - need to check for wild-card
+        filePath = '/etc/letsencrypt/live/%s/fullchain.pem' % (virtualHostName)
+        if os.path.exists(filePath):
+            import OpenSSL
+            x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, open(filePath, 'r').read())
+            SSLProvider = x509.get_issuer().get_components()[1][1].decode('utf-8')
+
+
+
+            #### totally seprate check to see if both non-www and www are covered
+
+            if SSLProvider == "Let's Encrypt":
+                status, domains = sslUtilities.getDomainsCovered(filePath)
+                if status:
+                    if len(domains) > 1:
+                        ### need further checks here to see if ssl is valid for less then 15 days etc
+                        logging.CyberCPLogFileWriter.writeToFile(
+                            '[CheckIfSSLNeedsToBeIssued] SSL exists for %s and both versions are covered, just need to ensure if SSL is valid for less then 15 days.' % (virtualHostName), 0)
+                        pass
+                    else:
+                        return sslUtilities.ISSUE_SSL
+
+            #####
+
+            expireData = x509.get_notAfter().decode('ascii')
+            from datetime import datetime
+            finalDate = datetime.strptime(expireData, '%Y%m%d%H%M%SZ')
+            now = datetime.now()
+            diff = finalDate - now
+
+            if int(diff.days) >= 15 and SSLProvider!='Denial':
+                logging.CyberCPLogFileWriter.writeToFile(
+                    '[CheckIfSSLNeedsToBeIssued] SSL exists for %s and is not ready to fetch new SSL., skipping..' % (
+                        virtualHostName), 0)
+
+                return sslUtilities.DONT_ISSUE
+            elif SSLProvider == 'Denial':
+                logging.CyberCPLogFileWriter.writeToFile(
+                    f'[CheckIfSSLNeedsToBeIssued] Self-signed SSL found, lets issue new SSL for {virtualHostName}', 0)
+                return sslUtilities.ISSUE_SSL
+            elif SSLProvider != "Let's Encrypt":
+                logging.CyberCPLogFileWriter.writeToFile(
+                    f'[CheckIfSSLNeedsToBeIssued] Custom SSL found for {virtualHostName}', 0)
+                return sslUtilities.DONT_ISSUE
+            else:
+                logging.CyberCPLogFileWriter.writeToFile(
+                    f'[CheckIfSSLNeedsToBeIssued] We will issue SSL for {virtualHostName}', 0)
+                return sslUtilities.ISSUE_SSL
+        else:
+            logging.CyberCPLogFileWriter.writeToFile(
+                f'[CheckIfSSLNeedsToBeIssued] We will issue SSL for {virtualHostName}', 0)
+            return sslUtilities.ISSUE_SSL
 
     @staticmethod
     def checkIfSSLMap(virtualHostName):
@@ -320,7 +407,8 @@ context /.well-known/acme-challenge {
                     except BaseException as msg:
                         website = Websites.objects.get(domain=virtualHostName)
                         externalApp = website.externalApp
-                        DocumentRoot = '    DocumentRoot /home/' + virtualHostName + '/public_html\n'
+                        docRoot = ACLManager.FindDocRootOfSite(None, virtualHostName)
+                        DocumentRoot = f'    DocumentRoot {docRoot}\n'
 
                     data = open(completePathToConfigFile, 'r').readlines()
                     phpHandler = ''
@@ -383,6 +471,7 @@ context /.well-known/acme-challenge {
 
     @staticmethod
     def obtainSSLForADomain(virtualHostName, adminEmail, sslpath, aliasDomain=None):
+
         from plogical.acl import ACLManager
         from plogical.sslv2 import sslUtilities as sslv2
         import json
@@ -399,10 +488,15 @@ context /.well-known/acme-challenge {
 
         Status = 1
 
-        if (Status == 1) or ProcessUtilities.decideServer() == ProcessUtilities.ent:
-            retStatus, message = sslv2.obtainSSLForADomain(virtualHostName, adminEmail, sslpath, aliasDomain)
-            if retStatus == 1:
-                return retStatus
+        # if (Status == 1) or ProcessUtilities.decideServer() == ProcessUtilities.ent:
+        #     retStatus, message = sslv2.obtainSSLForADomain(virtualHostName, adminEmail, sslpath, aliasDomain)
+        #     if retStatus == 1:
+        #         return retStatus
+
+        if sslUtilities.CheckIfSSLNeedsToBeIssued(virtualHostName) == sslUtilities.ISSUE_SSL:
+            pass
+        else:
+            return 1
 
         sender_email = 'root@%s' % (socket.gethostname())
 
@@ -411,6 +505,9 @@ context /.well-known/acme-challenge {
         if not os.path.exists('/usr/local/lsws/Example/html/.well-known/acme-challenge'):
             command = f'mkdir -p /usr/local/lsws/Example/html/.well-known/acme-challenge'
             ProcessUtilities.normalExecutioner(command)
+
+        command = f'chmod -R 755 /usr/local/lsws/Example/html'
+        ProcessUtilities.executioner(command)
 
         CustomVerificationFile = f'/usr/local/lsws/Example/html/.well-known/acme-challenge/{virtualHostName}'
         command = f'touch {CustomVerificationFile}'
@@ -568,6 +665,19 @@ def issueSSLForDomain(domain, adminEmail, sslpath, aliasDomain=None):
 
             pathToStoreSSLPrivKey = "/etc/letsencrypt/live/%s/privkey.pem" % (domain)
             pathToStoreSSLFullChain = "/etc/letsencrypt/live/%s/fullchain.pem" % (domain)
+
+            #### if in any case ssl failed to obtain and CyberPanel try to issue self-signed ssl, first check if ssl already present.
+            ### if so, dont issue self-signed ssl, as it may override some existing ssl
+
+            if os.path.exists(pathToStoreSSLFullChain):
+                import OpenSSL
+                x509 = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, open(pathToStoreSSLFullChain, 'r').read())
+                SSLProvider = x509.get_issuer().get_components()[1][1].decode('utf-8')
+
+                if SSLProvider != 'Denial':
+                    if sslUtilities.installSSLForDomain(domain) == 1:
+                        logging.CyberCPLogFileWriter.writeToFile("We are not able to get new SSL for " + domain + ". But there is an existing SSL, it might only be for the main domain (excluding www).")
+                        return [1, "We are not able to get new SSL for " + domain + ". But there is an existing SSL, it might only be for the main domain (excluding www)." + " [issueSSLForDomain]"]
 
             command = 'openssl req -newkey rsa:2048 -new -nodes -x509 -days 3650 -subj "/C=US/ST=Denial/L=Springfield/O=Dis/CN=' + domain + '" -keyout ' + pathToStoreSSLPrivKey + ' -out ' + pathToStoreSSLFullChain
             cmd = shlex.split(command)

@@ -747,6 +747,8 @@ def ConfigureV2BackupSetup(request):
         req_data['token_uri'] = request.GET.get('to')
         req_data['scopes'] = request.GET.get('s')
         req_data['accountname'] = request.GET.get('n')
+        req_data['client_id'] = request.GET.get('client_id')
+        req_data['client_secret'] = request.GET.get('client_secret')
         website = request.GET.get('d')
 
         # logging.writeToFile('domainname is ====%s'%(request.GET.get))
@@ -770,7 +772,9 @@ def ConfigureV2BackupSetup(request):
 
     except BaseException as msg:
         logging.writeToFile("Error configure"+str(msg))
-        return redirect(loadLoginPage)
+        data_ret = {'status': 0, 'error_message': str(msg) + request.get_raw_uri() }
+        json_data = json.dumps(data_ret)
+        return HttpResponse(json_data)
 
 def CreateV2Backup(request):
     try:
@@ -895,6 +899,49 @@ def RestorePathV2(request):
         json_data = json.dumps(data_ret)
         return HttpResponse(json_data)
 
+def DeleteSnapshotV2Final(request):
+    try:
+        userID = request.session['userID']
+        data = json.loads(request.body)
+        SnapShotId = data['snapshotid']
+        Selectedwebsite = data['selwebsite']
+        Selectedrepo = data['selectedrepo']
+
+        currentACL = ACLManager.loadedACL(userID)
+        admin = Administrator.objects.get(pk=userID)
+
+        if ACLManager.checkOwnership(str(Selectedwebsite), admin, currentACL) == 1:
+            pass
+        else:
+            return ACLManager.loadError()
+
+        extra_args = {}
+        extra_args['function'] = 'InitiateRestore'
+        extra_args['website'] = Selectedwebsite
+        extra_args['domain'] = Selectedwebsite
+        extra_args['BasePath'] = '/home/backup'
+        extra_args['BackendName'] = Selectedrepo
+        extra_args['snapshotid'] = SnapShotId
+        # extra_args['BackupData'] = data['websiteData'] if 'websiteData' in data else False
+        # extra_args['BackupEmails'] = data['websiteEmails'] if 'websiteEmails' in data else False
+        # extra_args['BackupDatabase'] = data['websiteDatabases'] if 'websiteDatabases' in data else False
+
+
+        background = CPBackupsV2(extra_args)
+        background.DeleteSnapshots(SnapShotId)
+
+        # vm = CPBackupsV2({'domain': Selectedwebsite, 'BackendName': Selectedrepo, "function": "", 'BasePath': '/home/backup'})
+        # status = vm.InitiateRestore(SnapShotId, Path)
+
+        data_ret = {'status': 1, 'installStatus': 1, 'error_message': 'None',}
+        json_data = json.dumps(data_ret)
+        return HttpResponse(json_data)
+
+    except BaseException as msg:
+        data_ret = {'status': 0, 'installStatus': 0, 'error_message': str(msg)}
+        json_data = json.dumps(data_ret)
+        return HttpResponse(json_data)
+
 def selectwebsiteRetorev2(request):
     import re
     try:
@@ -943,6 +990,7 @@ def ConfigureSftpV2Backup(request):
         hostName = data['hostName']
         UserName = data['UserName']
         Repo_Name = data['Repo_Name']
+        #sshPort = data['sshPort']
         currentACL = ACLManager.loadedACL(userID)
         admin = Administrator.objects.get(pk=userID)
 
@@ -957,6 +1005,11 @@ def ConfigureSftpV2Backup(request):
         req_data['user'] = UserName
         req_data['password'] = sfptpasswd
         req_data['Repo_Name'] = Repo_Name
+
+        try:
+            req_data['sshPort'] = data['sshPort']
+        except:
+            req_data['sshPort'] = '22'
 
 
         cpbuv2 = CPBackupsV2(

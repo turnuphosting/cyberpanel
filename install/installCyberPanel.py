@@ -37,10 +37,42 @@ def get_Ubuntu_release():
     return release
 
 
+def FetchCloudLinuxAlmaVersionVersion():
+    if os.path.exists('/etc/os-release'):
+        data = open('/etc/os-release', 'r').read()
+        if (data.find('CloudLinux') > -1 or data.find('cloudlinux') > -1) and (data.find('8.9') > -1 or data.find('Anatoly Levchenko') > -1 or data.find('VERSION="8.') > -1):
+            return 'cl-89'
+        elif (data.find('CloudLinux') > -1 or data.find('cloudlinux') > -1) and (data.find('8.8') > -1 or data.find('Anatoly Filipchenko') > -1):
+            return 'cl-88'
+        elif (data.find('CloudLinux') > -1 or data.find('cloudlinux') > -1) and (data.find('9.4') > -1 or data.find('VERSION="9.') > -1):
+            return 'cl-88'
+        elif (data.find('AlmaLinux') > -1 or data.find('almalinux') > -1) and (data.find('8.9') > -1 or data.find('Midnight Oncilla') > -1 or data.find('VERSION="8.') > -1):
+            return 'al-88'
+        elif (data.find('AlmaLinux') > -1 or data.find('almalinux') > -1) and (data.find('8.7') > -1 or data.find('Stone Smilodon') > -1):
+            return 'al-87'
+        elif (data.find('AlmaLinux') > -1 or data.find('almalinux') > -1) and (data.find('9.4') > -1 or data.find('9.3') > -1 or data.find('Shamrock Pampas') > -1 or data.find('Seafoam Ocelot') > -1 or data.find('VERSION="9.') > -1):
+            return 'al-93'
+    else:
+        return -1
+
 class InstallCyberPanel:
     mysql_Root_password = ""
     mysqlPassword = ""
     CloudLinux8 = 0
+
+    @staticmethod
+    def ISARM():
+
+        try:
+            command = 'uname -a'
+            result = subprocess.run(command, capture_output=True, text=True, shell=True)
+
+            if 'aarch64' in result.stdout:
+                return True
+            else:
+                return False
+        except:
+            return False
 
     @staticmethod
     def OSFlags():
@@ -102,26 +134,34 @@ class InstallCyberPanel:
                 except:
                     pass
 
-                command = 'wget https://www.litespeedtech.com/packages/6.0/lsws-6.0-ent-x86_64-linux.tar.gz'
+                if InstallCyberPanel.ISARM():
+                    command = 'wget https://www.litespeedtech.com/packages/6.0/lsws-6.2-ent-aarch64-linux.tar.gz'
+                else:
+                    command = 'wget https://www.litespeedtech.com/packages/6.0/lsws-6.2-ent-x86_64-linux.tar.gz'
+
                 install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
 
-                command = 'tar zxf lsws-6.0-ent-x86_64-linux.tar.gz'
+                if InstallCyberPanel.ISARM():
+                    command = 'tar zxf lsws-6.2-ent-aarch64-linux.tar.gz'
+                else:
+                    command = 'tar zxf lsws-6.2-ent-x86_64-linux.tar.gz'
+
                 install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
 
                 if str.lower(self.serial) == 'trial':
-                    command = 'wget -q --output-document=lsws-6.0/trial.key http://license.litespeedtech.com/reseller/trial.key'
+                    command = 'wget -q --output-document=lsws-6.2/trial.key http://license.litespeedtech.com/reseller/trial.key'
                 if self.serial == '1111-2222-3333-4444':
-                    command = 'wget -q --output-document=/root/cyberpanel/install/lsws-6.0/trial.key http://license.litespeedtech.com/reseller/trial.key'
+                    command = 'wget -q --output-document=/root/cyberpanel/install/lsws-6.2/trial.key http://license.litespeedtech.com/reseller/trial.key'
                     install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
                 else:
-                    writeSerial = open('lsws-6.0/serial.no', 'w')
+                    writeSerial = open('lsws-6.2/serial.no', 'w')
                     writeSerial.writelines(self.serial)
                     writeSerial.close()
 
-                shutil.copy('litespeed/install.sh', 'lsws-6.0/')
-                shutil.copy('litespeed/functions.sh', 'lsws-6.0/')
+                shutil.copy('litespeed/install.sh', 'lsws-6.2/')
+                shutil.copy('litespeed/functions.sh', 'lsws-6.2/')
 
-                os.chdir('lsws-6.0')
+                os.chdir('lsws-6.2')
 
                 command = 'chmod +x install.sh'
                 install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
@@ -268,39 +308,99 @@ class InstallCyberPanel:
 
         ############## Install mariadb ######################
 
-        mRepo = '/etc/yum.repos.d/MariaDB.repo'
-
         if self.distro == ubuntu:
 
-            if get_Ubuntu_release() == 18.10:
-                command = 'DEBIAN_FRONTEND=noninteractive apt-get install software-properties-common -y'
+            command = 'DEBIAN_FRONTEND=noninteractive apt-get install software-properties-common -y'
+            install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+
+            command = "DEBIAN_FRONTEND=noninteractive apt-get install apt-transport-https curl -y"
+            install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+
+            command = "mkdir -p /etc/apt/keyrings"
+            install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
+
+            command = "curl -o /etc/apt/keyrings/mariadb-keyring.pgp 'https://mariadb.org/mariadb_release_signing_key.pgp'"
+            install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
+            RepoPath = '/etc/apt/sources.list.d/mariadb.sources'
+            RepoContent = f"""
+# MariaDB 10.11 repository list - created 2023-12-11 07:53 UTC
+# https://mariadb.org/download/
+X-Repolib-Name: MariaDB
+Types: deb
+# deb.mariadb.org is a dynamic mirror if your preferred mirror goes offline. See https://mariadb.org/mirrorbits/ for details.
+# URIs: https://deb.mariadb.org/10.11/ubuntu
+URIs: https://mirrors.gigenet.com/mariadb/repo/10.11/ubuntu
+Suites: jammy
+Components: main main/debug
+Signed-By: /etc/apt/keyrings/mariadb-keyring.pgp
+"""
+
+            if get_Ubuntu_release() > 21.00:
+                command = 'curl -LsS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | sudo bash -s -- --mariadb-server-version=10.11'
+                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+            #     WriteToFile = open(RepoPath, 'w')
+            #     WriteToFile.write(RepoContent)
+            #     WriteToFile.close()
+
+
+
+            command = 'DEBIAN_FRONTEND=noninteractive apt-get update -y'
+            install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+
+
+            command = "DEBIAN_FRONTEND=noninteractive apt-get install mariadb-server -y"
+        elif self.distro == centos:
+
+            RepoPath = '/etc/yum.repos.d/mariadb.repo'
+            RepoContent = f"""
+[mariadb]
+name = MariaDB
+baseurl = http://yum.mariadb.org/10.11/rhel8-amd64
+module_hotfixes=1
+gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck=1            
+"""
+            WriteToFile = open(RepoPath, 'w')
+            WriteToFile.write(RepoContent)
+            WriteToFile.close()
+
+            command = 'dnf install mariadb-server -y'
+        elif self.distro == cent8 or self.distro == openeuler:
+
+            clAPVersion = FetchCloudLinuxAlmaVersionVersion()
+            type = clAPVersion.split('-')[0]
+            version = int(clAPVersion.split('-')[1])
+
+
+            if type == 'cl' and version >= 88:
+
+                command = 'yum remove db-governor db-governor-mysql -y'
                 install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
 
-                command = "apt-key adv --fetch-keys 'https://mariadb.org/mariadb_release_signing_key.asc'"
-                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
+                command = 'yum install governor-mysql -y'
+                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
 
-                command = "add-apt-repository 'deb [arch=amd64,arm64,ppc64el] https://mirror.yongbok.net/mariadb/repo/10.4/ubuntu bionic main'"
-                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
+                command = '/usr/share/lve/dbgovernor/mysqlgovernor.py --mysql-version=mariadb106'
+                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
 
-            command = "DEBIAN_FRONTEND=noninteractive apt-get -y install mariadb-server"
-        elif self.distro == centos:
-            command = 'yum --enablerepo=mariadb -y install MariaDB-server MariaDB-client'
-        elif self.distro == cent8 or self.distro == openeuler:
-            ### check if cent8 which means Alma8 then add Mariadb 10.6 repo
-#             if self.distro == cent8:
-#                 content = """
-# [mariadb]
-# name = MariaDB
-# baseurl = http://yum.mariadb.org/10.6/rhel8-amd64
-# module_hotfixes=1
-# gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
-# gpgcheck=1
-# """
-#                 writeToFile = open('/etc/yum.repos.d/mariadb.repo', 'w')
-#                 writeToFile.write(content)
-#                 writeToFile.close()
+                command = '/usr/share/lve/dbgovernor/mysqlgovernor.py --install --yes'
 
-            command = 'dnf -y install mariadb-server'
+            else:
+
+                command = 'curl -LsS https://downloads.mariadb.com/MariaDB/mariadb_repo_setup | sudo bash -s -- --mariadb-server-version=10.11'
+                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+
+                command = 'yum remove mariadb* -y'
+                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+
+                command = 'sudo dnf -qy module disable mariadb'
+                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+
+                command = 'sudo dnf module reset mariadb -y'
+                install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
+
+
+                command = 'dnf install MariaDB-server MariaDB-client MariaDB-backup -y'
 
         install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR, True)
 
@@ -317,7 +417,7 @@ class InstallCyberPanel:
                 passwordCMD = "use mysql;DROP DATABASE IF EXISTS test;DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%%';GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' IDENTIFIED BY '%s';flush privileges;" % (
                     InstallCyberPanel.mysql_Root_password)
 
-            command = 'mysql -u root -e "' + passwordCMD + '"'
+            command = 'mariadb -u root -e "' + passwordCMD + '"'
 
             install.preFlightsChecks.call(command, self.distro, command, command, 0, 0, os.EX_OSERR)
 
@@ -436,7 +536,7 @@ class InstallCyberPanel:
                     self.distro == ubuntu and get_Ubuntu_release() == 18.14):
                 command = 'openssl req -newkey rsa:1024 -new -nodes -x509 -days 3650 -subj "/C=US/ST=Denial/L=Springfield/O=Dis/CN=www.example.com" -keyout /etc/ssl/private/pure-ftpd.pem -out /etc/ssl/private/pure-ftpd.pem'
             else:
-                command = 'openssl req -x509 -nodes -days 7300 -newkey rsa:2048 -subj "/C=US/ST=Denial/L=Springfield/O=Dis/CN=www.example.com" -keyout /etc/ssl/private/pure-ftpd.pem -out /etc/ssl/private/pure-ftpd.pem'
+                command = 'openssl req -x509 -nodes -days 7300 -newkey rsa:2048 -subj "/C=US/ST=Denial/L=Sprinal-ield/O=Dis/CN=www.example.com" -keyout /etc/ssl/private/pure-ftpd.pem -out /etc/ssl/private/pure-ftpd.pem'
 
             install.preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
 
@@ -521,6 +621,8 @@ class InstallCyberPanel:
                 install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
 
 
+
+
                 if get_Ubuntu_release() > 21.00:
                     ### change mysql md5 to crypt
 
@@ -529,6 +631,19 @@ class InstallCyberPanel:
 
                     command = "systemctl restart pure-ftpd-mysql.service"
                     install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
+            else:
+
+                try:
+                    clAPVersion = FetchCloudLinuxAlmaVersionVersion()
+                    type = clAPVersion.split('-')[0]
+                    version = int(clAPVersion.split('-')[1])
+
+                    if type == 'al' and version >= 90:
+                        command = "sed -i 's/MYSQLCrypt md5/MYSQLCrypt crypt/g' /etc/pure-ftpd/pureftpd-mysql.conf"
+                        install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
+                except:
+                    pass
+
 
 
             InstallCyberPanel.stdOut("PureFTPD configured!", 1)
@@ -567,13 +682,6 @@ class InstallCyberPanel:
                 #     InstallCyberPanel.stdOut("[ERROR] Unable to create /etc/resolv.conf: " + str(e) +
                 #                              ".  This may need to be fixed manually as 'echo \"nameserver 8.8.8.8\"> "
                 #                              "/etc/resolv.conf'", 1, 1, os.EX_OSERR)
-
-            # if self.distro == cent8:
-            #     command = 'dnf config-manager --set-enabled PowerTools'
-            #     install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
-            #
-            #     command = 'curl -o /etc/yum.repos.d/powerdns-auth-master.repo https://repo.powerdns.com/repo-files/centos-auth-master.repo'
-            #     install.preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
 
             if self.distro == ubuntu:
                 command = "DEBIAN_FRONTEND=noninteractive apt-get -y install pdns-server pdns-backend-mysql"

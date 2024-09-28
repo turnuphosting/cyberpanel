@@ -9,6 +9,7 @@ import argparse
 import os
 from plogical.mailUtilities import mailUtilities
 from plogical.processUtilities import ProcessUtilities
+from ApachController.ApacheVhosts import ApacheVhost
 
 import json
 from django.urls import reverse
@@ -217,7 +218,32 @@ class phpUtilities:
             return msg
 
     @staticmethod
-    def GetPHPVersionFromFile(vhFile):
+    def GetPHPVersionFromFile(vhFile, domainName=None):
+
+        if domainName == None:
+            # Your file path
+            file_path = "/usr/local/lsws/conf/vhosts/mautic.wpmautic.net/vhost.conf"
+
+            # Split the path by '/'
+            path_parts = file_path.split('/')
+
+            # Find the index of 'vhosts' in the path
+            vhosts_index = path_parts.index('vhosts')
+
+            # Extract the domain
+            domainName = path_parts[vhosts_index + 1]
+
+        finalConfPath = ApacheVhost.configBasePath + domainName + '.conf'
+        if os.path.exists(finalConfPath):
+            command = f'grep -Eo -m 1 "php[0-9]+" {finalConfPath} | sed -n "1p"'
+            result = ProcessUtilities.outputExecutioner(command, None, True).rstrip('\n')
+            result = f'/usr/local/lsws/ls{result}/bin/lsphp'
+            result = result.rsplit("lsphp", 1)[0] + "php"
+            return result
+
+        if os.path.exists('/usr/local/CyberCP/debug'):
+            logging.CyberCPLogFileWriter.writeToFile(f'VHFile in GetPHPVersion {vhFile}')
+
         if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
             command = f'grep -Eo "/usr/local/lsws/lsphp[0-9]+/bin/lsphp" {vhFile}'
             result = ProcessUtilities.outputExecutioner(command, None, True).rstrip('\n')
@@ -236,14 +262,19 @@ class phpUtilities:
     @staticmethod
     def WrapGetPHPVersionFromFileToGetVersionWithPHP(vhFile):
         result = phpUtilities.GetPHPVersionFromFile(vhFile)
-        command = result + " -v | awk '/^PHP/ {print $2}'"
+
+        if os.path.exists(ProcessUtilities.debugPath):
+            logging.CyberCPLogFileWriter.writeToFile(result)
+
+        command = result + " -v 2>/dev/null | awk '/^PHP/ {print $2}'"
         php_version = ProcessUtilities.outputExecutioner(command, None, True).rstrip('\n')
         return f"PHP {php_version}"
 
     @staticmethod
     def FindIfSaidPHPIsAvaiableOtherwiseMaketheNextOneAvailableToUse(vhFile, phpVersion):
         if vhFile != None:
-            result = phpUtilities.GetPHPVersionFromFile(vhFile)
+            virtualHostName = vhFile.split('/')[6]
+            result = phpUtilities.GetPHPVersionFromFile(vhFile, virtualHostName)
 
             if os.path.exists(result):
                 return phpVersion
@@ -261,8 +292,6 @@ class phpUtilities:
                 return PHPManager.findPHPVersions()[-2]
 
 
-
-
     @staticmethod
     def InstallSaidPHP(php):
         if ProcessUtilities.decideDistro() == ProcessUtilities.ubuntu or  ProcessUtilities.decideDistro() == ProcessUtilities.ubuntu20:
@@ -272,10 +301,6 @@ class phpUtilities:
 
 
         ProcessUtilities.executioner(command, None, True)
-
-
-
-
 
 
 

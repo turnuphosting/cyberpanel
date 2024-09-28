@@ -15,7 +15,7 @@ from stat import *
 import stat
 
 VERSION = '2.3'
-BUILD = 4
+BUILD = 7
 
 char_set = {'small': 'abcdefghijklmnopqrstuvwxyz', 'nums': '0123456789', 'big': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'}
 
@@ -33,8 +33,27 @@ def generate_pass(length=14):
 centos = 0
 ubuntu = 1
 cent8 = 2
+cent9 = 4
 openeuler = 3
 CloudLinux8 = 0
+
+def FetchCloudLinuxAlmaVersionVersion():
+    if os.path.exists('/etc/os-release'):
+        data = open('/etc/os-release', 'r').read()
+        if (data.find('CloudLinux') > -1 or data.find('cloudlinux') > -1) and (data.find('8.9') > -1 or data.find('Anatoly Levchenko') > -1 or data.find('VERSION="8.') > -1):
+            return 'cl-89'
+        elif (data.find('CloudLinux') > -1 or data.find('cloudlinux') > -1) and (data.find('8.8') > -1 or data.find('Anatoly Filipchenko') > -1):
+            return 'cl-88'
+        elif (data.find('CloudLinux') > -1 or data.find('cloudlinux') > -1) and (data.find('9.4') > -1 or data.find('VERSION="9.') > -1):
+            return 'cl-88'
+        elif (data.find('AlmaLinux') > -1 or data.find('almalinux') > -1) and (data.find('8.9') > -1 or data.find('Midnight Oncilla') > -1 or data.find('VERSION="8.') > -1):
+            return 'al-88'
+        elif (data.find('AlmaLinux') > -1 or data.find('almalinux') > -1) and (data.find('8.7') > -1 or data.find('Stone Smilodon') > -1):
+            return 'al-87'
+        elif (data.find('AlmaLinux') > -1 or data.find('almalinux') > -1) and (data.find('9.4') > -1 or data.find('9.3') > -1 or data.find('Shamrock Pampas') > -1 or data.find('Seafoam Ocelot') > -1 or data.find('VERSION="9.') > -1):
+            return 'al-93'
+    else:
+        return -1
 
 
 def get_distro():
@@ -56,7 +75,8 @@ def get_distro():
 
         if data.find('CentOS Linux release 8') > -1:
             return cent8
-        if data.find('AlmaLinux release 8') > -1:
+        ## if almalinux 9 then pretty much same as cent8
+        if data.find('AlmaLinux release 8') > -1 or data.find('AlmaLinux release 9') > -1:
             return cent8
         if data.find('Rocky Linux release 8') > -1 or data.find('Rocky Linux 8') > -1 or data.find('rocky:8') > -1:
             return cent8
@@ -106,7 +126,7 @@ class preFlightsChecks:
     debug = 1
     cyberPanelMirror = "mirror.cyberpanel.net/pip"
     cdn = 'cyberpanel.sh'
-    SnappyVersion = '2.28.1'
+    SnappyVersion = '2.33.0'
 
     def __init__(self, rootPath, ip, path, cwd, cyberPanelPath, distro, remotemysql=None, mysqlhost=None, mysqldb=None,
                  mysqluser=None, mysqlpassword=None, mysqlport=None):
@@ -122,6 +142,173 @@ class preFlightsChecks:
         self.mysqlpassword = mysqlpassword
         self.mysqlport = mysqlport
         self.mysqldb = mysqldb
+
+
+    def installQuota(self,):
+        try:
+
+            if self.distro == centos or self.distro == cent8 or self.distro == openeuler:
+                command = "yum install quota -y"
+                preFlightsChecks.call(command, self.distro, command,
+                                      command,
+                                      1, 0, os.EX_OSERR)
+
+                if self.edit_fstab('/', '/') == 0:
+                    preFlightsChecks.stdOut("Quotas will not be abled as we failed to modify fstab file.")
+                    return 0
+
+
+                command = 'mount -o remount /'
+                preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+                command = 'mount -o remount /'
+                mResult = subprocess.run(command, capture_output=True, text=True, shell=True)
+                if mResult.returncode != 0:
+                    fstab_path = '/etc/fstab'
+                    backup_path = fstab_path + '.bak'
+                    if os.path.exists(fstab_path):
+                        os.remove(fstab_path)
+                    shutil.copy(backup_path, fstab_path)
+
+                    preFlightsChecks.stdOut("Re-mount failed, restoring original FSTab and existing quota setup.")
+                    return 0
+
+
+
+            ##
+
+            if self.distro == ubuntu:
+                self.stdOut("Install Quota on Ubuntu")
+                command = 'apt update -y'
+                preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+                command = 'DEBIAN_FRONTEND=noninteractive apt install quota -y'
+                preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR, True)
+
+                command = "find /lib/modules/ -type f -name '*quota_v*.ko*'"
+
+
+                if subprocess.check_output(command,shell=True).decode("utf-8").find("quota/") == -1:
+                    command = "DEBIAN_FRONTEND=noninteractive apt install linux-image-extra-virtual -y"
+                    preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR, True)
+
+                if self.edit_fstab('/', '/') == 0:
+                    preFlightsChecks.stdOut("Quotas will not be abled as we are are failed to modify fstab file.")
+                    return 0
+
+                command = 'mount -o remount /'
+                mResult = subprocess.run(command, capture_output=True, text=True, shell=True)
+                if mResult.returncode != 0:
+                    fstab_path = '/etc/fstab'
+                    backup_path = fstab_path + '.bak'
+                    if os.path.exists(fstab_path):
+                        os.remove(fstab_path)
+                    shutil.copy(backup_path, fstab_path)
+
+                    preFlightsChecks.stdOut("Re-mount failed, restoring original FSTab and existing quota setup.")
+                    return 0
+
+                command = 'quotacheck -ugm /'
+                preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+                ####
+
+                command = "find /lib/modules/ -type f -name '*quota_v*.ko*'"
+                iResult = subprocess.run(command, capture_output=True, text=True, shell=True)
+                print(repr(iResult.stdout))
+
+                # Only if the first command works, run the rest
+
+                if iResult.returncode == 0:
+                    command = "echo '{}' | sed -n 's|/lib/modules/\\([^/]*\\)/.*|\\1|p' | sort -u".format(iResult.stdout)
+                    result = subprocess.run(command, capture_output=True, text=True, shell=True)
+                    fResult = result.stdout.rstrip('\n')
+                    print(repr(result.stdout.rstrip('\n')))
+
+                    command  = 'uname -r'
+                    ffResult = subprocess.run(command, capture_output=True, text=True, shell=True)
+                    ffResult = ffResult.stdout.rstrip('\n')
+
+                    command = f"DEBIAN_FRONTEND=noninteractive  apt-get install linux-modules-extra-{ffResult}"
+                    preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR, True)
+
+                ###
+
+                    command = f'modprobe quota_v1 -S {ffResult}'
+                    preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+                    command = f'modprobe quota_v2 -S {ffResult}'
+                    preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+            command = f'quotacheck -ugm /'
+            preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+            command = f'quotaon -v /'
+            preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+        except BaseException as msg:
+            logging.InstallLog.writeToFile("[ERROR] installQuota. " + str(msg))
+
+    def edit_fstab(self,mount_point, options_to_add):
+
+        try:
+            retValue = 1
+            # Backup the original fstab file
+            fstab_path = '/etc/fstab'
+            backup_path = fstab_path + '.bak'
+
+            rData = open(fstab_path, 'r').read()
+
+            if rData.find('xfs') > -1:
+                options_to_add = 'uquota'
+            else:
+                options_to_add = 'usrquota,grpquota'
+
+            if not os.path.exists(backup_path):
+                shutil.copy(fstab_path, backup_path)
+
+            # Read the fstab file
+            with open(fstab_path, 'r') as file:
+                lines = file.readlines()
+
+            # Modify the appropriate line
+            WriteToFile = open(fstab_path, 'w')
+            for i, line in enumerate(lines):
+
+                if line.find('\t') > -1:
+                    parts = line.split('\t')
+                else:
+                    parts = line.split(' ')
+
+                print(parts)
+                try:
+                    if parts[1] == '/' and parts[3].find(options_to_add) == -1 and len(parts[3]) > 4:
+
+                        parts[3] = f'{parts[3]},{options_to_add}'
+                        tempParts = [item for item in parts if item.strip()]
+                        finalString = '\t'.join(tempParts)
+                        print(finalString)
+                        WriteToFile.write(finalString)
+
+                    elif parts[1] == '/':
+
+                        for ii, p in enumerate(parts):
+                            if p.find('defaults') > -1 or p.find('discard') > -1 or p.find('errors=') > -1:
+                                parts[ii] = f'{parts[ii]},{options_to_add}'
+                                tempParts = [item for item in parts if item.strip()]
+                                finalString = '\t'.join(tempParts)
+                                print(finalString)
+                                WriteToFile.write(finalString)
+                    else:
+                        WriteToFile.write(line)
+                except:
+                    WriteToFile.write(line)
+
+            WriteToFile.close()
+
+            return retValue
+        except:
+            return 0
 
     @staticmethod
     def stdOut(message, log=0, do_exit=0, code=os.EX_OK):
@@ -140,6 +327,16 @@ class preFlightsChecks:
 
     def mountTemp(self):
         try:
+
+            result = subprocess.run('systemd-detect-virt', capture_output=True, text=True, shell=True)
+
+            if result.stdout.find('openvz') > -1:
+                if self.distro == ubuntu:
+                    command = 'DEBIAN_FRONTEND=noninteractive apt install inetutils-inetd -y'
+                    preFlightsChecks.call(command, self.distro, command,
+                                          command,
+                                          1, 0, os.EX_OSERR)
+
             # ## On OpenVZ there is an issue using .tempdisk for /tmp as it breaks network on container after reboot.
             #
             # if subprocess.check_output('systemd-detect-virt').decode("utf-8").find("openvz") > -1:
@@ -744,7 +941,7 @@ password="%s"
             preFlightsChecks.call(command, self.distro, '[download_install_phpmyadmin]',
                                   command, 1, 0, os.EX_OSERR)
 
-            command = 'unzip /usr/local/CyberCP/public/phpmyadmin.zip -d /usr/local/CyberCP/public/phpmyadmin'
+            command = 'unzip /usr/local/CyberCP/public/phpmyadmin.zip -d /usr/local/CyberCP/public'
             preFlightsChecks.call(command, self.distro, '[download_install_phpmyadmin]',
                                   command, 1, 0, os.EX_OSERR)
 
@@ -834,8 +1031,17 @@ $cfg['Servers'][$i]['LogoutURL'] = 'phpmyadminsignin.php?logout';
                 command = 'yum install --enablerepo=gf-plus -y postfix3 postfix3-ldap postfix3-mysql postfix3-pcre'
                 preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
             elif self.distro == cent8:
-                command = 'dnf --nogpg install -y https://mirror.ghettoforge.org/distributions/gf/gf-release-latest.gf.el8.noarch.rpm'
-                preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+
+                clAPVersion = FetchCloudLinuxAlmaVersionVersion()
+                type = clAPVersion.split('-')[0]
+                version = int(clAPVersion.split('-')[1])
+
+                if type == 'al' and version >= 90:
+                    command = 'dnf --nogpg install -y https://mirror.ghettoforge.org/distributions/gf/gf-release-latest.gf.el9.noarch.rpm'
+                    preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
+                else:
+                    command = 'dnf --nogpg install -y https://mirror.ghettoforge.org/distributions/gf/gf-release-latest.gf.el8.noarch.rpm'
+                    preFlightsChecks.call(command, self.distro, command, command, 1, 0, os.EX_OSERR)
 
                 command = 'dnf install --enablerepo=gf-plus postfix3 postfix3-mysql -y'
                 preFlightsChecks.call(command, self.distro, command, command, 1, 1, os.EX_OSERR)
@@ -2060,11 +2266,11 @@ milter_default_action = accept
             writeToFile.write(configData)
             writeToFile.close()
 
-            if self.distro == ubuntu:
+            if self.distro == ubuntu or self.distro == cent8:
                 data = open(openDKIMConfigurePath, 'r').readlines()
                 writeToFile = open(openDKIMConfigurePath, 'w')
                 for items in data:
-                    if items.find('Socket') > -1 and items.find('local:') and items[0] != '#':
+                    if items.find('Socket') > -1 and items.find('local:'):
                         writeToFile.writelines('Socket  inet:8891@localhost\n')
                     else:
                         writeToFile.writelines(items)
@@ -2456,6 +2662,7 @@ def main():
     checks = preFlightsChecks("/usr/local/lsws/", args.publicip, "/usr/local", cwd, "/usr/local/CyberCP", distro,
                               remotemysql, mysqlhost, mysqldb, mysqluser, mysqlpassword, mysqlport)
     checks.mountTemp()
+    checks.installQuota()
 
     if args.port is None:
         port = "8090"

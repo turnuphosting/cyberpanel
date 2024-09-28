@@ -15,9 +15,11 @@ class ProcessUtilities(multi.Thread):
     OLS = 0
     centos = 1
     cent8 = 2
+    cent9 = 3
     ubuntu = 0
     ubuntu20 = 3
     ubuntu22Check = 0
+    alma9check = 0
     server_address = '/usr/local/lscpd/admin/comm.sock'
     token = "unset"
     portPath = '/usr/local/lscp/conf/bind.conf'
@@ -165,6 +167,7 @@ class ProcessUtilities(multi.Thread):
     @staticmethod
     def decideDistro():
         distroPath = '/etc/lsb-release'
+        distroPathAlma = '/etc/redhat-release'
 
         if os.path.exists(distroPath):
             
@@ -176,7 +179,13 @@ class ProcessUtilities(multi.Thread):
                 return ProcessUtilities.ubuntu20
             return ProcessUtilities.ubuntu
         else:
-            if open('/etc/redhat-release', 'r').read().find('CentOS Linux release 8') > -1 or open('/etc/redhat-release', 'r').read().find('AlmaLinux release 8') > -1 or open('/etc/redhat-release', 'r').read().find('Rocky Linux release 8') > -1:
+            if open('/etc/redhat-release', 'r').read().find('CentOS Linux release 8') > -1 or open('/etc/redhat-release', 'r').read().find('AlmaLinux release 8') > -1 \
+                    or open('/etc/redhat-release', 'r').read().find('Rocky Linux release 8') > -1 \
+                    or open('/etc/redhat-release', 'r').read().find('Rocky Linux release 9') > -1 or open('/etc/redhat-release', 'r').read().find('AlmaLinux release 9') > -1:
+                ## this is check only
+                if open(distroPathAlma, 'r').read().find('AlmaLinux release 9') > -1 or open(distroPathAlma, 'r').read().find('Rocky Linux release 9') > -1:
+                    ProcessUtilities.alma9check = 1
+
                 return ProcessUtilities.cent8
             return ProcessUtilities.centos
 
@@ -241,11 +250,14 @@ class ProcessUtilities(multi.Thread):
                     command = '%s-d %s %s' % (ProcessUtilities.token, dir, command)
                     sock.sendall(command.encode('utf-8'))
             else:
+                if command.startswith('sudo'):
+                    command = command.replace('sudo', '', 1)  # Replace 'sudo' with an empty string, only once
+
                 if dir == None:
                     command = '%s-u %s %s' % (ProcessUtilities.token, user, command)
                 else:
                     command = '%s-u %s -d %s %s' % (ProcessUtilities.token, user, dir, command)
-                command = command.replace('sudo', '')
+
 
 
                 if os.path.exists(ProcessUtilities.debugPath):
@@ -297,6 +309,9 @@ class ProcessUtilities(multi.Thread):
     @staticmethod
     def outputExecutioner(command, user=None, shell = None, dir = None, retRequired = None):
         try:
+            if os.path.exists('/usr/local/CyberCP/debug'):
+                logging.writeToFile(command)
+
             if getpass.getuser() == 'root':
                 if os.path.exists(ProcessUtilities.debugPath):
                     logging.writeToFile(command)
@@ -368,6 +383,25 @@ class ProcessUtilities(multi.Thread):
             execPath = execPath + ' --%s %s' % (key, value)
 
         return execPath
+
+
+    @staticmethod
+    def fetch_latest_lts_version_for_node():
+        import requests
+        url = "https://api.github.com/repos/nodejs/node/releases"
+        try:
+            response = requests.get(url)
+            if response.status_code == 200:
+                releases = response.json()
+                for release in releases:
+                    if release.get('prerelease') == False and 'LTS' in release.get('name'):
+                        lts_version = release.get('tag_name')
+                        return lts_version
+            else:
+                print("Failed to fetch releases. Status code:", response.status_code)
+        except Exception as e:
+            print("An error occurred:", e)
+        return None
 
 
 
